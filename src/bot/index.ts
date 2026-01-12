@@ -11,6 +11,11 @@ export function createBot(): Telegraf {
     bot = new Telegraf(config.telegram.botToken);
     setupCommands(bot);
     setupMiddleware(bot);
+
+    // Global error handler
+    bot.catch((err, ctx) => {
+      console.error(`❌ Telegram Error for ${ctx.updateType}:`, err);
+    });
   }
   return bot;
 }
@@ -31,16 +36,16 @@ function setupCommands(bot: Telegraf): void {
     const helpMessage = `
 🤖 *Available Commands*:
 
-/mock <address> <url> <finance> <max> <min> <duplicate> \- Start a mock copy task
-/start <address> <url> <finance> <max> <min> <duplicate> \- Start a live copy task
-/list \- List all live tasks
-/list_mock \- List all mock tasks
-/stop <id> \- Stop a task
-/remove <id> \- Remove a task (or use /remove all to clear)
-/help \- Show this help message
-/ping \- Check bot status
+/mock <address> <url> <finance> <max> <min> <duplicate> - Start a mock copy task
+/start <address> <url> <finance> <max> <min> <duplicate> - Start a live copy task
+/list - List all live tasks
+/list\\_mock - List all mock tasks
+/stop <id> - Stop a task
+/remove <id> - Remove a task (or use /remove all to clear)
+/help - Show this help message
+/ping - Check bot status
     `;
-    await ctx.replyWithMarkdownV2(helpMessage);
+    await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
   });
 
   // Helper to parse task arguments

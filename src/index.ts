@@ -1,6 +1,7 @@
 import { validateConfig } from './config/index.js';
 import { createBot, stopBot } from './bot/index.js';
 import { getRedisClient, closeRedisConnection } from './services/redis.js';
+import { connectToMongoDB, closeMongoDBConnection } from './services/mongodb.js';
 import { startExampleWorker, stopExampleWorker } from './workers/example.worker.js';
 
 async function main(): Promise<void> {
@@ -12,6 +13,9 @@ async function main(): Promise<void> {
   // Initialize Redis connection
   await getRedisClient();
   console.log('📦 Redis initialized');
+
+  // Initialize MongoDB connection
+  await connectToMongoDB();
 
   // Start workers
   startExampleWorker();
@@ -35,6 +39,7 @@ async function shutdown(signal: string): Promise<void> {
     await stopBot();
     await stopExampleWorker();
     await closeRedisConnection();
+    await closeMongoDBConnection();
     console.log('👋 Goodbye!');
     process.exit(0);
   } catch (error) {
