@@ -7,6 +7,6 @@ export interface CopyTask {
   max: number;
   min: number;
   duplicate: boolean;
-  status: 'running' | 'stopped';
+  status: 'init' | 'running' | 'stopped';
   createdAt: number;
 }

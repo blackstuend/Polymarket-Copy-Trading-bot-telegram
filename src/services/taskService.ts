@@ -24,7 +24,7 @@ export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'create
   const task: CopyTask = {
     ...taskData,
     id,
-    status: 'running',
+    status: 'init',
     createdAt: Date.now(),
   };
 
@@ -68,6 +68,11 @@ export async function stopTask(id: string): Promise<boolean> {
   await removeTaskJob(id);
   
   return true;
+}
+
+export async function updateTask(task: CopyTask): Promise<void> {
+  const redis = await getRedisClient();
+  await redis.hSet(TASKS_KEY, task.id, JSON.stringify(task));
 }
 
 export async function removeTask(id?: string): Promise<number> {
