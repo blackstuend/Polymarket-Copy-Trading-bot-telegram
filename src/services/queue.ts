@@ -13,14 +13,13 @@ function createBullMQConnection(): Redis {
 }
 
 // Define your job data types
-export interface ExampleJobData {
-  message: string;
-  userId: number;
+export interface TaskJobData {
+  taskId: string;
 }
 
 // Queue names
 export const QUEUE_NAMES = {
-  EXAMPLE: 'example-queue',
+  TASK: 'task-queue',
 } as const;
 
 // Create a queue
@@ -53,11 +52,11 @@ export function createWorker<T>(
 
   const worker = new Worker<T>(name, processor, {
     connection,
-    concurrency: 5,
+    concurrency: 5, // Process multiple tasks concurrently
   });
 
   worker.on('completed', (job) => {
-    console.log(`✅ Job ${job.id} completed`);
+    // console.log(`✅ Job ${job.id} completed`);
   });
 
   worker.on('failed', (job, err) => {
@@ -68,12 +67,65 @@ export function createWorker<T>(
   return worker;
 }
 
-// Example queue instance
-let exampleQueue: Queue<ExampleJobData> | null = null;
+// Task queue instance
+let taskQueue: Queue<TaskJobData> | null = null;
 
-export function getExampleQueue(): Queue<ExampleJobData> {
-  if (!exampleQueue) {
-    exampleQueue = createQueue<ExampleJobData>(QUEUE_NAMES.EXAMPLE);
+export function getTaskQueue(): Queue<TaskJobData> {
+  if (!taskQueue) {
+    taskQueue = createQueue<TaskJobData>(QUEUE_NAMES.TASK);
   }
-  return exampleQueue;
+  return taskQueue;
+}
+
+// Schedule a repeating job for a specific task
+export async function scheduleTaskJob(taskId: string, intervalMs: number = 5000): Promise<void> {
+  const queue = getTaskQueue();
+  
+  // Create a predictable job ID for the repeatable job
+  // Note: BullMQ generates its own IDs for repeatable jobs, but we can use this for reference
+  // The 'repeat' option is what makes it unique mostly
+  
+  await queue.add(
+    'process-task',
+    { taskId },
+    {
+      jobId: `task:${taskId}`, // Base ID
+      repeat: {
+        every: intervalMs,
+      },
+    }
+  );
+
+  console.log(`⏰ Scheduled job for task ${taskId} (every ${intervalMs}ms)`);
+}
+
+// Helper to clear ALL repeatable jobs (useful for cleanup/debugging)
+export async function clearAllRepeatableJobs(): Promise<void> {
+  const queue = getTaskQueue();
+  const repeatableJobs = await queue.getRepeatableJobs();
+  
+  console.log(`🧹 Found ${repeatableJobs.length} repeatable jobs to clear...`);
+  
+  for (const job of repeatableJobs) {
+    await queue.removeRepeatableByKey(job.key);
+  }
+  
+  console.log('✨ All repeatable jobs cleared.');
+}
+
+// Remove the repeating job for a task
+export async function removeTaskJob(taskId: string, intervalMs: number = 5000): Promise<void> {
+  const queue = getTaskQueue();
+  
+  // To remove, we generally need to match the configuration. 
+  // For 'every', we provide the same configuration.
+  await queue.removeRepeatable(
+    'process-task',
+    {
+      every: intervalMs,
+    },
+    `task:${taskId}` // We used this jobId base when adding
+  );
+
+  console.log(`� Removed scheduled job for task ${taskId}`);
 }

@@ -1,6 +1,5 @@
 import { Telegraf, Context } from 'telegraf';
 import { config } from '../config/index.js';
-import { getExampleQueue } from '../services/queue.js';
 import { addTask, listTasks, stopTask, removeTask } from '../services/taskService.js';
 import { CopyTask } from '../types/task.js';
 

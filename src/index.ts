@@ -2,7 +2,8 @@ import { validateConfig } from './config/index.js';
 import { createBot, stopBot } from './bot/index.js';
 import { getRedisClient, closeRedisConnection } from './services/redis.js';
 import { connectToMongoDB, closeMongoDBConnection } from './services/mongodb.js';
-import { startExampleWorker, stopExampleWorker } from './workers/example.worker.js';
+import { startTaskWorker, stopTaskWorker } from './workers/task.worker.js';
+import { clearAllRepeatableJobs } from './services/queue.js';
 
 async function main(): Promise<void> {
   console.log('🚀 Starting application...');
@@ -17,8 +18,11 @@ async function main(): Promise<void> {
   // Initialize MongoDB connection
   await connectToMongoDB();
 
-  // Start workers
-  startExampleWorker();
+  // Clean up any zombie jobs from previous runs
+  await clearAllRepeatableJobs();
+
+  // Start task worker (restores schedules for running tasks)
+  await startTaskWorker();
 
   // Create and launch bot
   const bot = createBot();
@@ -37,7 +41,7 @@ async function shutdown(signal: string): Promise<void> {
 
   try {
     await stopBot();
-    await stopExampleWorker();
+    await stopTaskWorker();
     await closeRedisConnection();
     await closeMongoDBConnection();
     console.log('👋 Goodbye!');

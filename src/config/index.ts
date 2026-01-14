@@ -5,7 +5,7 @@ export const config = {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   },
   redis: {
-    host: process.env.REDIS_HOST || 'localhost',
+    host: process.env.REDIS_HOST,
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
     password: process.env.REDIS_PASSWORD || undefined,
   },
@@ -21,5 +21,11 @@ export function validateConfig(): void {
   }
   if (!config.mongodb.uri) {
     throw new Error('MONGODB_URI is required');
+  }
+  if (!config.redis.host) {
+    throw new Error('REDIS_HOST is required');
+  }
+  if (!config.redis.port) {
+    throw new Error('REDIS_PORT is required');
   }
 }
