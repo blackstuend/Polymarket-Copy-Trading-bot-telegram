@@ -4,11 +4,8 @@ import { config } from '../config/index.js';
 export async function connectToMongoDB(): Promise<void> {
   try {
     const uri = config.mongodb.uri as string;
-    console.log(`🔌 Connecting to MongoDB...`);
     
     await mongoose.connect(uri);
-    
-    console.log('✅ MongoDB connected successfully');
     
     mongoose.connection.on('error', (error) => {
       console.error('❌ MongoDB connection error:', error);

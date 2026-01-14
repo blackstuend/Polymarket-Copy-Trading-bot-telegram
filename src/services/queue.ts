@@ -104,13 +104,10 @@ export async function clearAllRepeatableJobs(): Promise<void> {
   const queue = getTaskQueue();
   const repeatableJobs = await queue.getRepeatableJobs();
   
-  console.log(`🧹 Found ${repeatableJobs.length} repeatable jobs to clear...`);
   
   for (const job of repeatableJobs) {
     await queue.removeRepeatableByKey(job.key);
   }
-  
-  console.log('✨ All repeatable jobs cleared.');
 }
 
 // Remove the repeating job for a task

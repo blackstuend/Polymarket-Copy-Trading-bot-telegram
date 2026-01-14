@@ -4,6 +4,7 @@ import { getRedisClient, closeRedisConnection } from './services/redis.js';
 import { connectToMongoDB, closeMongoDBConnection } from './services/mongodb.js';
 import { startTaskWorker, stopTaskWorker } from './workers/task.worker.js';
 import { clearAllRepeatableJobs } from './services/queue.js';
+import { performStartupChecks } from './services/healthCheck.js';
 
 async function main(): Promise<void> {
   console.log('🚀 Starting application...');
@@ -13,13 +14,15 @@ async function main(): Promise<void> {
 
   // Initialize Redis connection
   await getRedisClient();
-  console.log('📦 Redis initialized');
 
   // Initialize MongoDB connection
   await connectToMongoDB();
 
   // Clean up any zombie jobs from previous runs
   await clearAllRepeatableJobs();
+
+  // Perform startup checks
+  await performStartupChecks();
 
   // Start task worker (restores schedules for running tasks)
   await startTaskWorker();
