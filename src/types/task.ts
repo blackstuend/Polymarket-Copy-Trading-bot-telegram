@@ -2,6 +2,7 @@ export interface CopyTask {
   id: string;
   type: 'live' | 'mock';
   address: string;
+  wallet?: string;
   url: string;
   initialFinance: number;
   currentBalance: number;

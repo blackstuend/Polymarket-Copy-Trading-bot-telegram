@@ -1,7 +1,7 @@
 import { Job, Worker } from 'bullmq';
-import { listTasks, updateTask } from '../services/taskService.js';
+import { getTask, listTasks, updateTask } from '../services/taskService.js';
 import { scheduleTaskJob, createWorker, TaskJobData, QUEUE_NAMES } from '../services/queue.js';
-import { getTask } from '../services/taskService.js';
+import { withTaskLock } from '../services/taskLock.js';
 import { CopyTask } from '../types/task.js';
 import {
   closePositionOnStartup,
@@ -82,32 +82,37 @@ async function reconcilePositionsOnStartup(task: CopyTask): Promise<void> {
 
 async function processJob(job: Job<TaskJobData>): Promise<void> {
   const { taskId } = job.data;
-  // console.log(`🔄 [${new Date().toISOString()}] Processing task ${taskId}...`);
 
   if (!taskId) {
     console.error(`❌ Job ${job.id} has no taskId! Data:`, job.data);
     return;
   }
 
-  try {
-    const task = await getTask(taskId);
+  const ran = await withTaskLock(taskId, async () => {
+    try {
+      const task = await getTask(taskId);
 
-    if (!task) {
-      console.warn(`⚠️ Task ${taskId} not found in Redis (maybe removed?)`);
-      return;
+      if (!task) {
+        console.warn(`⚠️ Task ${taskId} not found in Redis (maybe removed?)`);
+        return;
+      }
+
+      if (task.status !== 'running') {
+        console.log(`ℹ️ Task ${taskId} is ${task.status}, skipping execution`);
+        return;
+      }
+
+      // Execute the task
+      await executeTask(task);
+
+    } catch (error) {
+      console.error(`❌ Error processing task ${taskId}:`, error);
+      throw error; // Re-throw to let BullMQ handle retries
     }
+  });
 
-    if (task.status !== 'running') {
-      console.log(`ℹ️ Task ${taskId} is ${task.status}, skipping execution`);
-      return;
-    }
-
-    // Execute the task
-    await executeTask(task);
-
-  } catch (error) {
-    console.error(`❌ Error processing task ${taskId}:`, error);
-    throw error; // Re-throw to let BullMQ handle retries
+  if (!ran) {
+    console.log(`[Task ${taskId}] Previous run still active, skipping this interval`);
   }
 }
 

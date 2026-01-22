@@ -1,6 +1,7 @@
 import { UserActivity, IUserActivity } from '../models/UserActivity.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { UserPosition } from '../models/UserPosition.js';
+import { MyPosition } from '../models/MyPosition.js';
 import { fetchData } from '../utils/fetchData.js';
 import { CopyTask } from '../types/task.js';
 import { PositionData } from '../types/position.js';
@@ -19,6 +20,13 @@ import {
 // Polymarket minimum order sizes
 const MIN_ORDER_SIZE_USD = 1.0;
 const MIN_ORDER_SIZE_TOKENS = 1.0;
+
+const getTaskWallet = (task: CopyTask): string => {
+    if (task.wallet) {
+        return task.wallet;
+    }
+    return task.address;
+};
 
 interface MockOrderResult {
     success: boolean;
@@ -206,8 +214,9 @@ export const getMyPositions = async (task: CopyTask): Promise<PositionData[]> =>
     try {
         if (task.type === 'mock') {
             // 從資料庫獲取 positions (mock 模式只用 taskId 查詢)
-            const dbPositions = await UserPosition.find({
+            const dbPositions = await MyPosition.find({
                 taskId: task.id,
+                proxyWallet: getTaskWallet(task),
             }).exec();
 
             // 轉換資料庫格式為 API 格式
@@ -441,6 +450,7 @@ export const handleBuyTrade = async (
     myPosition: PositionData | undefined
 ): Promise<number> => {
     console.log(`[MOCK] Executing BUY strategy for ${trade.slug}...`);
+    const taskWallet = getTaskWallet(task);
 
     // Skip if price is too high
     if (trade.price > 0.99) {
@@ -488,10 +498,10 @@ export const handleBuyTrade = async (
     console.log(`[MOCK] Bought $${result.usdcAmount.toFixed(2)} at $${result.fillPrice.toFixed(4)} (${result.fillSize.toFixed(2)} tokens, slippage: ${result.slippage.toFixed(2)}%)`);
 
     // Create or update position in database
-    await UserPosition.findOneAndUpdate(
-        { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId },
+    await MyPosition.findOneAndUpdate(
+        { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet },
         {
-            proxyWallet: trade.proxyWallet,
+            proxyWallet: taskWallet,
             asset: trade.asset,
             conditionId: trade.conditionId,
             size: result.fillSize,
@@ -520,7 +530,7 @@ export const handleBuyTrade = async (
     await persistMockTradeRecrod({
         taskId: task.id,
         side: trade.side,
-        proxyWallet: trade.proxyWallet,
+        proxyWallet: taskWallet,
         asset: trade.asset,
         conditionId: trade.conditionId,
         outcomeIndex: trade.outcomeIndex,
@@ -561,6 +571,7 @@ export const handleSellTrade = async (
     copyTraderPosition: PositionData | undefined
 ): Promise<number> => {
     console.log(`[MOCK] Executing SELL strategy for ${trade.slug}...`);
+    const taskWallet = getTaskWallet(task);
 
     // Skip if no position to sell
     if (!myPosition || myPosition.size <= 0) {
@@ -618,13 +629,13 @@ export const handleSellTrade = async (
 
     if (newSize <= 0.01) {
         // Close position entirely
-        await UserPosition.deleteOne({ taskId: task.id, asset: trade.asset, conditionId: trade.conditionId });
+        await MyPosition.deleteOne({ taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet });
         console.log(`[MOCK] Position closed`);
     } else {
         // Partial close
         const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
-        await UserPosition.updateOne(
-            { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId },
+        await MyPosition.updateOne(
+            { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet },
             {
                 $set: {
                     size: newSize,
@@ -645,7 +656,7 @@ export const handleSellTrade = async (
     await persistMockTradeRecrod({
         taskId: task.id,
         side: trade.side,
-        proxyWallet: trade.proxyWallet,
+        proxyWallet: taskWallet,
         asset: trade.asset,
         conditionId: trade.conditionId,
         outcomeIndex: trade.outcomeIndex,
@@ -690,6 +701,7 @@ export const handleRedeemTrade = async (
 ): Promise<number> => {
     const positionLabel = trade.slug || trade.conditionId || 'unknown';
     console.log(`[REDEEM] Handling redeem event for ${positionLabel}...`);
+    const taskWallet = getTaskWallet(task);
 
     if (!myPosition || myPosition.size <= 0) {
         console.log(`[REDEEM] No position to redeem for ${positionLabel}`);
@@ -725,7 +737,7 @@ export const handleRedeemTrade = async (
         await persistMockTradeRecrod({
             taskId: task.id,
             side: 'REDEEM',
-            proxyWallet: myPosition.proxyWallet || trade.proxyWallet,
+            proxyWallet: taskWallet,
             asset: myPosition.asset || trade.asset,
             conditionId: myPosition.conditionId || trade.conditionId,
             outcomeIndex: myPosition.outcomeIndex ?? trade.outcomeIndex,
@@ -747,10 +759,11 @@ export const handleRedeemTrade = async (
             outcome: myPosition.outcome || trade.outcome,
         });
 
-        await UserPosition.deleteOne({
+        await MyPosition.deleteOne({
             taskId: task.id,
             asset: myPosition.asset,
             conditionId: myPosition.conditionId,
+            proxyWallet: taskWallet,
         });
 
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
@@ -776,10 +789,11 @@ export const handleRedeemTrade = async (
     const costBasis = myPosition.avgPrice * myPosition.size;
     const realizedPnl = result.value - costBasis;
 
-    await UserPosition.deleteOne({
+    await MyPosition.deleteOne({
         taskId: task.id,
         asset: myPosition.asset,
         conditionId: myPosition.conditionId,
+        proxyWallet: taskWallet,
     });
 
     await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
@@ -797,6 +811,7 @@ export const closePositionOnStartup = async (
     if (!myPosition || myPosition.size <= 0) {
         return 0;
     }
+    const taskWallet = getTaskWallet(task);
 
     const redeemResolvedPosition = async (context: string): Promise<number> => {
         console.log(`[STARTUP] ${context}`);
@@ -828,7 +843,7 @@ export const closePositionOnStartup = async (
             await persistMockTradeRecrod({
                 taskId: task.id,
                 side: 'REDEEM',
-                proxyWallet: myPosition.proxyWallet,
+                proxyWallet: taskWallet,
                 asset: myPosition.asset,
                 conditionId: myPosition.conditionId,
                 outcomeIndex: myPosition.outcomeIndex,
@@ -848,10 +863,11 @@ export const closePositionOnStartup = async (
             });
 
             // Delete position (settled)
-            await UserPosition.deleteOne({
+            await MyPosition.deleteOne({
                 taskId: task.id,
                 asset: myPosition.asset,
                 conditionId: myPosition.conditionId,
+                proxyWallet: taskWallet,
             });
 
             console.log(`[STARTUP] Redeemed position (mock), payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
@@ -871,10 +887,11 @@ export const closePositionOnStartup = async (
             const realizedPnl = result.value - costBasis;
 
             // Delete position (settled)
-            await UserPosition.deleteOne({
+            await MyPosition.deleteOne({
                 taskId: task.id,
                 asset: myPosition.asset,
                 conditionId: myPosition.conditionId,
+                proxyWallet: taskWallet,
             });
 
             console.log(`[STARTUP] Redeemed position (live), value: $${result.value.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
@@ -938,16 +955,17 @@ export const closePositionOnStartup = async (
     const positionSizeAfter = newSize <= 0.01 ? 0 : newSize;
 
     if (newSize <= 0.01) {
-        await UserPosition.deleteOne({
+        await MyPosition.deleteOne({
             taskId: task.id,
             asset: myPosition.asset,
             conditionId: myPosition.conditionId,
+            proxyWallet: taskWallet,
         });
         console.log(`[STARTUP] Position closed`);
     } else {
         const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
-        await UserPosition.updateOne(
-            { taskId: task.id, asset: myPosition.asset, conditionId: myPosition.conditionId },
+        await MyPosition.updateOne(
+            { taskId: task.id, asset: myPosition.asset, conditionId: myPosition.conditionId, proxyWallet: taskWallet },
             {
                 $set: {
                     size: newSize,
@@ -969,7 +987,7 @@ export const closePositionOnStartup = async (
         await persistMockTradeRecrod({
             taskId: task.id,
             side: 'SELL',
-            proxyWallet: myPosition.proxyWallet,
+            proxyWallet: taskWallet,
             asset: myPosition.asset,
             conditionId: myPosition.conditionId,
             outcomeIndex: myPosition.outcomeIndex,

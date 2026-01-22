@@ -1,9 +1,88 @@
 import { Telegraf, Context } from 'telegraf';
 import { config } from '../config/index.js';
 import { addTask, listTasks, stopTask, removeTask } from '../services/taskService.js';
+import { MyPosition } from '../models/MyPosition.js';
+import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { CopyTask } from '../types/task.js';
+import type { IMyPosition } from '../models/MyPosition.js';
+import type { IMockTradeRecrod } from '../models/mockTradeRecrod.js';
 
 let bot: Telegraf | null = null;
+
+function escapeMarkdown(text: string): string {
+  return text.replace(/[_*`[\]]/g, '\\$&');
+}
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return '$0.00';
+  return `$${value.toFixed(2)}`;
+}
+
+function formatSignedUsd(value: number): string {
+  if (!Number.isFinite(value)) return '$0.00';
+  const sign = value >= 0 ? '+' : '-';
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatPct(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return 'n/a';
+  return `${value.toFixed(2)}%`;
+}
+
+function formatDateTime(timestampMs: number | undefined): string {
+  if (!timestampMs || !Number.isFinite(timestampMs)) return 'n/a';
+  return new Date(timestampMs).toISOString().replace('T', ' ');
+}
+
+function formatTradeLine(trade: IMockTradeRecrod, index: number): string {
+  const label = trade.title || trade.slug || trade.conditionId || 'unknown';
+  const outcome = trade.outcome ? ` (${trade.outcome})` : '';
+  const realized =
+    typeof trade.realizedPnl === 'number' ? ` | pnl ${formatSignedUsd(trade.realizedPnl)}` : '';
+  const usdcAmount = typeof trade.usdcAmount === 'number' ? trade.usdcAmount : 0;
+  const fillPrice = typeof trade.fillPrice === 'number' ? trade.fillPrice : 0;
+  const fillSize = typeof trade.fillSize === 'number' ? trade.fillSize : 0;
+
+  return `${index}. ${formatDateTime(trade.executedAt)} ${escapeMarkdown(trade.side)} ` +
+    `${escapeMarkdown(label)}${escapeMarkdown(outcome)} | ${formatUsd(usdcAmount)} ` +
+    `@${fillPrice.toFixed(4)} | size ${fillSize.toFixed(2)}${realized}`;
+}
+
+function computePositionStats(positions: IMyPosition[]): {
+  openPositions: number;
+  totalPositionValue: number;
+  totalCostBasis: number;
+  unrealizedPnl: number;
+} {
+  let openPositions = 0;
+  let totalPositionValue = 0;
+  let totalCostBasis = 0;
+
+  for (const pos of positions) {
+    const size = typeof pos.size === 'number' ? pos.size : 0;
+    if (size <= 0) continue;
+    openPositions += 1;
+
+    const currentValue = Number.isFinite(pos.currentValue)
+      ? pos.currentValue
+      : size * (pos.curPrice || pos.avgPrice || 0);
+    const costBasis = Number.isFinite(pos.totalBought) && pos.totalBought > 0
+      ? pos.totalBought
+      : Number.isFinite(pos.initialValue) && pos.initialValue > 0
+        ? pos.initialValue
+        : (pos.avgPrice || 0) * size;
+
+    totalPositionValue += currentValue;
+    totalCostBasis += costBasis;
+  }
+
+  return {
+    openPositions,
+    totalPositionValue,
+    totalCostBasis,
+    unrealizedPnl: totalPositionValue - totalCostBasis,
+  };
+}
 
 export function createBot(): Telegraf {
   if (!bot) {
@@ -123,8 +202,66 @@ function setupCommands(bot: Telegraf): void {
   bot.command('list_mock', async (ctx) => {
     const tasks = await listTasks('mock');
     if (tasks.length === 0) return ctx.reply('No mock tasks running.');
-    const msg = tasks.map((t: CopyTask) => `ID: ${t.id} | ${t.address} | ${t.status}`).join('\n');
-    await ctx.reply(`📋 *Mock Tasks*:\n${msg}`, { parse_mode: 'Markdown' });
+    await ctx.reply(`Mock tasks: ${tasks.length}`);
+
+    for (const task of tasks) {
+      const taskWallet = task.wallet ?? task.address;
+      const [positions, recentTrades, realizedAgg] = await Promise.all([
+        MyPosition.find({ taskId: task.id, proxyWallet: taskWallet }).exec(),
+        mockTradeRecrod
+          .find({ taskId: task.id })
+          .sort({ executedAt: -1 })
+          .limit(5)
+          .exec(),
+        mockTradeRecrod.aggregate<{ _id: null; total: number }>([
+          { $match: { taskId: task.id, realizedPnl: { $ne: null } } },
+          { $group: { _id: null, total: { $sum: '$realizedPnl' } } },
+        ]),
+      ]);
+
+      const realizedPnl = realizedAgg[0]?.total ?? 0;
+      const positionStats = computePositionStats(positions);
+      const equity = task.currentBalance + positionStats.totalPositionValue;
+      const totalPnl = equity - task.initialFinance;
+      const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
+
+      const lastTrade = recentTrades[0];
+      const lastTradeLabel = lastTrade
+        ? `${formatDateTime(lastTrade.executedAt)} ${lastTrade.side} ` +
+          `${lastTrade.title || lastTrade.slug || lastTrade.conditionId || 'unknown'}`
+        : 'n/a';
+
+      const lines: string[] = [
+        `*Mock Task* ${escapeMarkdown(task.id)}`,
+        `ID: \`${escapeMarkdown(task.id)}\``,
+        `Address: \`${escapeMarkdown(task.address)}\``,
+      ];
+
+      if (task.wallet) {
+        lines.push(`Wallet: \`${escapeMarkdown(task.wallet)}\``);
+      }
+
+      lines.push(
+        `Status: ${escapeMarkdown(task.status)}`,
+        `Fixed amount: ${formatUsd(task.fixedAmount)} | Duplicate: ${task.duplicate ? 'true' : 'false'}`,
+        `Initial: ${formatUsd(task.initialFinance)} | Balance: ${formatUsd(task.currentBalance)} | Equity: ${formatUsd(equity)}`,
+        `PnL: ${formatSignedUsd(totalPnl)} (${formatPct(pnlPct)}) | Realized: ${formatSignedUsd(realizedPnl)} | ` +
+          `Unrealized: ${formatSignedUsd(positionStats.unrealizedPnl)}`,
+        `Positions: ${positionStats.openPositions} | Exposure: ${formatUsd(positionStats.totalPositionValue)}`,
+        `Last trade: ${escapeMarkdown(lastTradeLabel)}`,
+        'Recent trades:',
+      );
+
+      if (recentTrades.length === 0) {
+        lines.push('- none');
+      } else {
+        recentTrades.forEach((trade: IMockTradeRecrod, index: number) => {
+          lines.push(`- ${formatTradeLine(trade, index + 1)}`);
+        });
+      }
+
+      await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    }
   });
 
   // /stop command

@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { ethers } from 'ethers';
 import { getRedisClient } from './redis.js';
 import { CopyTask } from '../types/task.js';
 import { scheduleTaskJob, removeTaskJob } from './queue.js';
@@ -30,11 +31,17 @@ async function generateUniqueId(): Promise<string> {
   return id;
 }
 
+function generateMockWalletAddress(): string {
+  return ethers.Wallet.createRandom().address;
+}
+
 export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'createdAt'>): Promise<CopyTask> {
   const redis = await getRedisClient();
   const id = await generateUniqueId();
+  const wallet = taskData.wallet ?? (taskData.type === 'mock' ? generateMockWalletAddress() : undefined);
   const task: CopyTask = {
     ...taskData,
+    wallet,
     id,
     status: 'running',
     createdAt: Date.now(),
