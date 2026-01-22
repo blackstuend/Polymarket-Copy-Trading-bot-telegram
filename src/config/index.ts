@@ -12,6 +12,10 @@ export const config = {
   mongodb: {
     uri: process.env.MONGODB_URI,
   },
+  polymarket: {
+    clobHttpUrl: process.env.POLYMARKET_CLOB_HTTP_URL || 'https://clob.polymarket.com',
+    chainId: 137, // Polygon mainnet
+  },
 } as const;
 
 // Validate required environment variables
