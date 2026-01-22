@@ -124,5 +124,17 @@ export async function removeTaskJob(taskId: string, intervalMs: number = 5000): 
     `task:${taskId}` // We used this jobId base when adding
   );
 
-  console.log(`� Removed scheduled job for task ${taskId}`);
+  // Clear queued jobs for this task so stop/remove doesn't keep triggering runs.
+  const pendingJobs = await queue.getJobs(['waiting', 'delayed', 'paused'], 0, -1);
+  const matchingJobs = pendingJobs.filter((job) => job.data?.taskId === taskId);
+
+  for (const job of matchingJobs) {
+    try {
+      await job.remove();
+    } catch (error) {
+      console.warn(`⚠️ Failed to remove queued job ${job.id} for task ${taskId}:`, error);
+    }
+  }
+
+  console.log(`🧹 Removed scheduled job and ${matchingJobs.length} queued job(s) for task ${taskId}`);
 }

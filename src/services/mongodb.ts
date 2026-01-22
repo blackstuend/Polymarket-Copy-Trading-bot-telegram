@@ -1,11 +1,15 @@
 import mongoose from 'mongoose';
 import { config } from '../config/index.js';
+import { UserPosition } from '../models/UserPosition.js';
 
 export async function connectToMongoDB(): Promise<void> {
   try {
     const uri = config.mongodb.uri as string;
     
     await mongoose.connect(uri);
+
+    // Keep collection indexes aligned with schema to avoid stale unique constraints.
+    await UserPosition.syncIndexes();
     
     mongoose.connection.on('error', (error) => {
       console.error('❌ MongoDB connection error:', error);

@@ -10,7 +10,9 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "bids": "tsx src/scripts/printBids.ts",
-    "redeem-check": "tsx src/scripts/redeemCheck.ts"
+    "redeem-check": "tsx src/scripts/redeemCheck.ts",
+    "clear-locks": "tsx src/scripts/clearTaskLocks.ts",
+    "show-tasks": "tsx src/scripts/showTasksAndPositions.ts"
   },
   "keywords": [
     "telegram",

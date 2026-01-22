@@ -48,6 +48,27 @@ function formatTradeLine(trade: IMockTradeRecrod, index: number): string {
     `@${fillPrice.toFixed(4)} | size ${fillSize.toFixed(2)}${realized}`;
 }
 
+function formatPositionLine(position: IMyPosition, index: number): string {
+  const label = position.title || position.slug || position.conditionId || 'unknown';
+  const outcome = position.outcome ? ` (${position.outcome})` : '';
+  const size = Number.isFinite(position.size) ? position.size : 0;
+  const avgPrice = Number.isFinite(position.avgPrice) ? position.avgPrice : 0;
+  const curPrice = Number.isFinite(position.curPrice)
+    ? position.curPrice
+    : avgPrice;
+  const currentValue = Number.isFinite(position.currentValue)
+    ? position.currentValue
+    : size * curPrice;
+  const cashPnl = Number.isFinite(position.cashPnl) ? position.cashPnl : 0;
+  const percentPnl = Number.isFinite(position.percentPnl) ? position.percentPnl : null;
+  const realizedPnl = Number.isFinite(position.realizedPnl) ? position.realizedPnl : 0;
+
+  return `${index}. ${escapeMarkdown(label)}${escapeMarkdown(outcome)} | ` +
+    `size ${size.toFixed(2)} @${avgPrice.toFixed(4)} | value ${formatUsd(currentValue)} | ` +
+    `uPnL ${formatSignedUsd(cashPnl)} (${formatPct(percentPnl)}) | ` +
+    `rPnL ${formatSignedUsd(realizedPnl)}`;
+}
+
 function computePositionStats(positions: IMyPosition[]): {
   openPositions: number;
   totalPositionValue: number;
@@ -214,7 +235,7 @@ function setupCommands(bot: Telegraf): void {
           .limit(5)
           .exec(),
         mockTradeRecrod.aggregate<{ _id: null; total: number }>([
-          { $match: { taskId: task.id, realizedPnl: { $ne: null } } },
+          { $match: { taskId: task.id, realizedPnl: { $type: 'number' } } },
           { $group: { _id: null, total: { $sum: '$realizedPnl' } } },
         ]),
       ]);
@@ -230,6 +251,18 @@ function setupCommands(bot: Telegraf): void {
         ? `${formatDateTime(lastTrade.executedAt)} ${lastTrade.side} ` +
           `${lastTrade.title || lastTrade.slug || lastTrade.conditionId || 'unknown'}`
         : 'n/a';
+
+      const openPositions = positions.filter((pos) => (pos.size ?? 0) > 0);
+      const sortedPositions = [...openPositions].sort((a, b) => {
+        const aValue = Number.isFinite(a.currentValue)
+          ? a.currentValue
+          : (a.size || 0) * (a.curPrice || a.avgPrice || 0);
+        const bValue = Number.isFinite(b.currentValue)
+          ? b.currentValue
+          : (b.size || 0) * (b.curPrice || b.avgPrice || 0);
+        return bValue - aValue;
+      });
+      const topPositions = sortedPositions.slice(0, 5);
 
       const lines: string[] = [
         `*Mock Task* ${escapeMarkdown(task.id)}`,
@@ -248,6 +281,21 @@ function setupCommands(bot: Telegraf): void {
         `PnL: ${formatSignedUsd(totalPnl)} (${formatPct(pnlPct)}) | Realized: ${formatSignedUsd(realizedPnl)} | ` +
           `Unrealized: ${formatSignedUsd(positionStats.unrealizedPnl)}`,
         `Positions: ${positionStats.openPositions} | Exposure: ${formatUsd(positionStats.totalPositionValue)}`,
+        'Open positions:',
+      );
+
+      if (topPositions.length === 0) {
+        lines.push('- none');
+      } else {
+        topPositions.forEach((pos: IMyPosition, index: number) => {
+          lines.push(`- ${formatPositionLine(pos, index + 1)}`);
+        });
+        if (openPositions.length > topPositions.length) {
+          lines.push(`- ... and ${openPositions.length - topPositions.length} more`);
+        }
+      }
+
+      lines.push(
         `Last trade: ${escapeMarkdown(lastTradeLabel)}`,
         'Recent trades:',
       );

@@ -3,6 +3,10 @@ import { ethers } from 'ethers';
 import { getRedisClient } from './redis.js';
 import { CopyTask } from '../types/task.js';
 import { scheduleTaskJob, removeTaskJob } from './queue.js';
+import { UserActivity } from '../models/UserActivity.js';
+import { UserPosition } from '../models/UserPosition.js';
+import { MyPosition } from '../models/MyPosition.js';
+import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
 type RawTask = Omit<CopyTask, 'status'> & { status: string };
@@ -33,6 +37,18 @@ async function generateUniqueId(): Promise<string> {
 
 function generateMockWalletAddress(): string {
   return ethers.Wallet.createRandom().address;
+}
+
+async function removeTaskDatabaseRecords(taskIds: string[]): Promise<void> {
+  if (taskIds.length === 0) return;
+  const uniqueTaskIds = Array.from(new Set(taskIds));
+
+  await Promise.all([
+    UserActivity.deleteMany({ taskId: { $in: uniqueTaskIds } }),
+    UserPosition.deleteMany({ taskId: { $in: uniqueTaskIds } }),
+    MyPosition.deleteMany({ taskId: { $in: uniqueTaskIds } }),
+    mockTradeRecrod.deleteMany({ taskId: { $in: uniqueTaskIds } }),
+  ]);
 }
 
 export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'createdAt'>): Promise<CopyTask> {
@@ -100,6 +116,7 @@ export async function removeTask(id?: string): Promise<number> {
   if (id) {
     // Remove specific task job
     await removeTaskJob(id);
+    await removeTaskDatabaseRecords([id]);
     return await redis.hDel(TASKS_KEY, id);
   } else {
     // Remove all task jobs
@@ -111,6 +128,8 @@ export async function removeTask(id?: string): Promise<number> {
       await removeTaskJob(task.id);
     }
     
+    await removeTaskDatabaseRecords(tasks.map((task) => task.id));
+
     const count = await redis.del(TASKS_KEY);
     return count;
   }

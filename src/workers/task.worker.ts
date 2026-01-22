@@ -17,6 +17,8 @@ import { UserActivity } from '../models/UserActivity.js';
 import { getClobClient } from '../services/polymarket.js';
 
 let worker: Worker<TaskJobData> | null = null;
+const taskRunCounts = new Map<string, number>();
+const reconcileEveryRuns = 30;
 
 export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
   if (!worker) {
@@ -100,6 +102,12 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
       if (task.status !== 'running') {
         console.log(`ℹ️ Task ${taskId} is ${task.status}, skipping execution`);
         return;
+      }
+
+      const runCount = (taskRunCounts.get(taskId) ?? 0) + 1;
+      taskRunCounts.set(taskId, runCount);
+      if (runCount % reconcileEveryRuns === 0) {
+        await reconcilePositionsOnStartup(task);
       }
 
       // Execute the task
