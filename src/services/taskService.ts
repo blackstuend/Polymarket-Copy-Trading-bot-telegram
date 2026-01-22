@@ -4,6 +4,18 @@ import { CopyTask } from '../types/task.js';
 import { scheduleTaskJob, removeTaskJob } from './queue.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
+type RawTask = Omit<CopyTask, 'status'> & { status: string };
+
+function normalizeTaskStatus(status: string | undefined): CopyTask['status'] {
+  return status === 'stopped' ? 'stopped' : 'running';
+}
+
+function normalizeTask(task: RawTask): CopyTask {
+  return {
+    ...task,
+    status: normalizeTaskStatus(task.status),
+  };
+}
 
 /**
  * Generates a unique ID using UUID v4, ensuring it doesn't already exist in Redis.
@@ -24,7 +36,7 @@ export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'create
   const task: CopyTask = {
     ...taskData,
     id,
-    status: 'init',
+    status: 'running',
     createdAt: Date.now(),
   };
 
@@ -40,7 +52,7 @@ export async function listTasks(type?: 'live' | 'mock'): Promise<CopyTask[]> {
   const redis = await getRedisClient();
   const allTasksStr = await redis.hGetAll(TASKS_KEY);
   
-  const tasks = Object.values(allTasksStr).map(t => JSON.parse(t) as CopyTask);
+  const tasks = Object.values(allTasksStr).map((t) => normalizeTask(JSON.parse(t) as RawTask));
   
   if (type) {
     return tasks.filter(t => t.type === type);
@@ -52,7 +64,7 @@ export async function getTask(id: string): Promise<CopyTask | null> {
   const redis = await getRedisClient();
   const taskStr = await redis.hGet(TASKS_KEY, id);
   if (!taskStr) return null;
-  return JSON.parse(taskStr) as CopyTask;
+  return normalizeTask(JSON.parse(taskStr) as RawTask);
 }
 
 export async function stopTask(id: string): Promise<boolean> {
@@ -60,7 +72,7 @@ export async function stopTask(id: string): Promise<boolean> {
   const taskStr = await redis.hGet(TASKS_KEY, id);
   if (!taskStr) return false;
 
-  const task = JSON.parse(taskStr) as CopyTask;
+  const task = normalizeTask(JSON.parse(taskStr) as RawTask);
   task.status = 'stopped';
   await redis.hSet(TASKS_KEY, id, JSON.stringify(task));
   
@@ -96,4 +108,3 @@ export async function removeTask(id?: string): Promise<number> {
     return count;
   }
 }
-

@@ -3,9 +3,18 @@ import { listTasks, updateTask } from '../services/taskService.js';
 import { scheduleTaskJob, createWorker, TaskJobData, QUEUE_NAMES } from '../services/queue.js';
 import { getTask } from '../services/taskService.js';
 import { CopyTask } from '../types/task.js';
-import { syncTradeData } from '../services/tradeService.js';
-import { getPendingTrades, getMyPositions } from '../services/tradeService.js';
+import {
+  closePositionOnStartup,
+  getCopyTraderPositions,
+  getMyPositions,
+  getPendingTrades,
+  handleBuyTrade,
+  handleRedeemTrade,
+  handleSellTrade,
+  syncTradeData,
+} from '../services/tradeService.js';
 import { UserActivity } from '../models/UserActivity.js';
+import { getClobClient } from '../services/polymarket.js';
 
 let worker: Worker<TaskJobData> | null = null;
 
@@ -17,7 +26,8 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
 
     let restoredCount = 0;
     for (const task of runningTasks) {
-      if (task.status === 'running' || task.status === 'init') {
+      if (task.status === 'running') {
+        await reconcilePositionsOnStartup(task);
         await scheduleTaskJob(task.id);
         restoredCount++;
       }
@@ -28,6 +38,46 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
     worker = createWorker<TaskJobData>(QUEUE_NAMES.TASK, processJob);
   }
   return worker;
+}
+
+async function reconcilePositionsOnStartup(task: CopyTask): Promise<void> {
+  try {
+    const myPositions = await getMyPositions(task);
+    if (myPositions.length === 0) {
+      return;
+    }
+
+    const copyTraderPositions = await getCopyTraderPositions(task.address);
+    const copyPositionsByCondition = new Map(
+      copyTraderPositions.map((position) => [position.conditionId, position])
+    );
+
+    const client = getClobClient();
+    let closedCount = 0;
+
+    // Prepare live config if available
+    const liveConfig = task.type === 'live' && task.privateKey && task.rpcUrl
+      ? { privateKey: task.privateKey, rpcUrl: task.rpcUrl }
+      : undefined;
+
+    for (const myPosition of myPositions) {
+      const copyTraderPosition = copyPositionsByCondition.get(myPosition.conditionId);
+      if (!copyTraderPosition || copyTraderPosition.size <= 0) {
+        const received = await closePositionOnStartup(client, task, myPosition, liveConfig);
+        if (received > 0) {
+          task.currentBalance += received;
+          await updateTask(task);
+        }
+        closedCount++;
+      }
+    }
+
+    if (closedCount > 0) {
+      console.log(`[Task ${task.id}] Startup sync closed ${closedCount} position(s)`);
+    }
+  } catch (error) {
+    console.error(`[Task ${task.id}] Error during startup position sync:`, error);
+  }
 }
 
 async function processJob(job: Job<TaskJobData>): Promise<void> {
@@ -44,16 +94,6 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
 
     if (!task) {
       console.warn(`⚠️ Task ${taskId} not found in Redis (maybe removed?)`);
-      return;
-    }
-
-    if (task.status === 'init') {
-      console.log(`ℹ️ Task ${taskId} is starting (init)...`);
-      
-      // Update status to running
-      task.status = 'running';
-      await updateTask(task);
-      console.log(`✅ Task ${taskId} switched to running status`);
       return;
     }
 
@@ -76,46 +116,83 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
 async function executeTask(task: CopyTask): Promise<void> {
   await syncTradeData(task);
 
-  // 取得哪些要來交易從 db 拿出來
   try {
     const trades = await getPendingTrades(task.id);
-    // 檢查出哪些是不需要的交易的
-    // 1. 我沒有的 position 2. 我已經交易過的, 只有 buy 3. 並算出比例
+
+    if (trades.length === 0) {
+      return;
+    }
+
+    console.log(`[Task ${task.id}] Found ${trades.length} pending trade(s)`);
+
+    // Get my positions (from DB for mock, from API for live)
     const myPositions = await getMyPositions(task);
 
-    for(const trade of trades) {
-      const position = myPositions.find((pos) => pos.conditionId === trade.conditionId);
-      // 有 position 且是 buy, 代表我已經交易過了
-      if(position && trade.side === 'BUY') {
-        trade.botExcutedTime = Math.floor(Date.now() / 1000);
-        await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: trade.botExcutedTime, bot: true });
-        continue;
+    // Get copy trader's current positions from API
+    const copyTraderPositions = await getCopyTraderPositions(task.address);
+
+    // Get CLOB client for orderbook simulation
+    const client = getClobClient();
+
+    for (const trade of trades) {
+      // Mark as processing to avoid duplicate processing
+      await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 1 });
+
+      const myPosition = myPositions.find((pos) => pos.conditionId === trade.conditionId);
+      const copyTraderPosition = copyTraderPositions.find((pos) => pos.conditionId === trade.conditionId);
+
+      const tradeAction = trade.side || trade.type || 'UNKNOWN';
+      const tradeLabel = trade.slug || trade.conditionId || 'unknown';
+
+      console.log(`[Task ${task.id}] Processing ${tradeAction} trade: ${tradeLabel}`);
+      if (tradeAction === 'BUY' || tradeAction === 'SELL') {
+        console.log(`  - Trade size: ${trade.size} tokens, USDC: $${trade.usdcSize.toFixed(2)}, Price: $${trade.price.toFixed(4)}`);
+      } else if (tradeAction === 'REDEEM') {
+        console.log(`  - Redeem event detected`);
       }
 
-      // 沒有 position 且是 sell, 代表我沒有這個 position
-      if(!position && trade.side === 'SELL') {
-        trade.botExcutedTime = Math.floor(Date.now() / 1000);
-        await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: trade.botExcutedTime, bot: true });
-        continue;
+      if (tradeAction === 'BUY') {
+        // BUY logic: Skip if already have position
+        if (myPosition && myPosition.size > 0) {
+          console.log(`  - Skipping: Already have position (${myPosition.size.toFixed(2)} tokens)`);
+          await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 888, bot: true });
+          continue;
+        }
+
+        const spent = await handleBuyTrade(client, trade, task, myPosition);
+        if (spent > 0) {
+          task.currentBalance -= spent;
+          await updateTask(task);
+          console.log(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+        }
+      } else if (tradeAction === 'SELL') {
+        // SELL logic: Skip if no position to sell
+        if (!myPosition || myPosition.size <= 0) {
+          console.log(`  - Skipping: No position to sell`);
+          await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 888, bot: true });
+          continue;
+        }
+
+        const received = await handleSellTrade(client, trade, task, myPosition, copyTraderPosition);
+        if (received > 0) {
+          task.currentBalance += received;
+          await updateTask(task);
+          console.log(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+        }
+      } else if (tradeAction === 'REDEEM') {
+        const redeemed = await handleRedeemTrade(trade, task, myPosition);
+        if (redeemed > 0) {
+          task.currentBalance += redeemed;
+          await updateTask(task);
+          console.log(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+        }
+      } else {
+        console.log(`  - Unknown trade action: side=${trade.side || '""'} type=${trade.type || '""'}`);
+        await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 888, bot: true });
       }
-
-      // 有 position 且是 sell, 代表我需要去賣
-      if (position && trade.side === 'SELL') {
-        // 取得 copy trader 要賣出的比例根據他的 position
-        const copyTraderPosition = myPositions.find((pos) => pos.conditionId === trade.conditionId);
-        const copyTraderSellRatio =  trade.size / position.size;
-
-        // 算出我的實際要賣出的 size
-        const mySellSize = position.size * copyTraderSellRatio;
-        
-         // do the sell trade
-      }
-
-      // 買入
-      // do the buy trade
     }
   } catch (error) {
-    console.error(`❌ Error getting pending trades for task ${task.id}:`, error);
+    console.error(`Error getting pending trades for task ${task.id}:`, error);
   }
 }
 

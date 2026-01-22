@@ -5,12 +5,16 @@ import { connectToMongoDB, closeMongoDBConnection } from './services/mongodb.js'
 import { startTaskWorker, stopTaskWorker } from './workers/task.worker.js';
 import { clearAllRepeatableJobs } from './services/queue.js';
 import { performStartupChecks } from './services/healthCheck.js';
+import { initClobClient } from './services/polymarket.js';
 
 async function main(): Promise<void> {
   console.log('🚀 Starting application...');
 
   // Validate configuration
   validateConfig();
+
+  // Initialize CLOB client early (used by workers)
+  initClobClient();
 
   // Initialize Redis connection
   await getRedisClient();

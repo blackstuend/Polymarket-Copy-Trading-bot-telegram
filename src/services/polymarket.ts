@@ -1,6 +1,8 @@
 import { ClobClient } from '@polymarket/clob-client';
 import { config } from '../config/index.js';
 
+let clobClient: ClobClient | null = null;
+
 /**
  * Create a read-only Polymarket CLOB client (no wallet required)
  * Used for fetching market data, orderbooks, etc.
@@ -12,6 +14,20 @@ export function createReadOnlyClobClient(): ClobClient {
   const client = new ClobClient(clobHttpUrl, chainId);
 
   return client;
+}
+
+export function initClobClient(): ClobClient {
+  if (!clobClient) {
+    clobClient = createReadOnlyClobClient();
+  }
+  return clobClient;
+}
+
+export function getClobClient(): ClobClient {
+  if (!clobClient) {
+    throw new Error('CLOB client not initialized. Call initClobClient() during startup.');
+  }
+  return clobClient;
 }
 
 /**

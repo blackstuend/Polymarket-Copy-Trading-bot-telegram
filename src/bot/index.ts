@@ -35,14 +35,18 @@ function setupCommands(bot: Telegraf): void {
     const helpMessage = `
 🤖 *Available Commands*:
 
-/mock <address> <url> <finance> <max> <min> <duplicate> - Start a mock copy task
-/start <address> <url> <finance> <max> <min> <duplicate> - Start a live copy task
+/mock <address> <url> <finance> <amount> <duplicate> - Start a mock copy task
+/start <address> <url> <finance> <amount> <duplicate> - Start a live copy task
 /list - List all live tasks
 /list\\_mock - List all mock tasks
 /stop <id> - Stop a task
 /remove <id> - Remove a task (or use /remove all to clear)
 /help - Show this help message
 /ping - Check bot status
+
+*Parameters*:
+- finance: Initial balance
+- amount: Fixed amount per trade
     `;
     await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
   });
@@ -50,21 +54,19 @@ function setupCommands(bot: Telegraf): void {
   // Helper to parse task arguments
   const parseTaskArgs = (text: string) => {
     const parts = text.split(/\s+/).slice(1);
-    if (parts.length < 6) return null;
-    
-    const finance = parseFloat(parts[2]);
-    const max = parseFloat(parts[3]);
-    const min = parseFloat(parts[4]);
-    const duplicate = parts[5].toLowerCase() === 'true';
+    if (parts.length < 5) return null;
 
-    if (isNaN(finance) || isNaN(max) || isNaN(min)) return null;
+    const finance = parseFloat(parts[2]);
+    const amount = parseFloat(parts[3]);
+    const duplicate = parts[4].toLowerCase() === 'true';
+
+    if (isNaN(finance) || isNaN(amount)) return null;
 
     return {
       address: parts[0],
       url: parts[1],
       finance,
-      max,
-      min,
+      amount,
       duplicate,
     };
   };
@@ -73,18 +75,18 @@ function setupCommands(bot: Telegraf): void {
   bot.command('mock', async (ctx) => {
     const args = parseTaskArgs(ctx.message.text);
     if (!args) {
-      return ctx.reply('❌ Usage: /mock <address> <url> <finance> <max> <min> <true/false>');
+      return ctx.reply('❌ Usage: /mock <address> <url> <finance> <amount> <true/false>');
     }
     const task = await addTask({
       type: 'mock',
       address: args.address,
       url: args.url,
       initialFinance: args.finance,
-      max: args.max,
-      min: args.min,
+      currentBalance: args.finance,
+      fixedAmount: args.amount,
       duplicate: args.duplicate,
     });
-    await ctx.reply(`✅ Mock task created! ID: ${task.id}`);
+    await ctx.reply(`✅ Mock task created! ID: ${task.id}\nFixed amount: $${args.amount}`);
   });
 
   // /start command
@@ -93,7 +95,7 @@ function setupCommands(bot: Telegraf): void {
     if (!args) {
       return ctx.reply(
         '👋 Welcome! I am your Polymarket Copy Trading Bot.\n\n' +
-        'Usage: /start <address> <url> <finance> <max> <min> <true/false>\n' +
+        'Usage: /start <address> <url> <finance> <amount> <true/false>\n' +
         'Or type /help for more info.'
       );
     }
@@ -102,11 +104,11 @@ function setupCommands(bot: Telegraf): void {
       address: args.address,
       url: args.url,
       initialFinance: args.finance,
-      max: args.max,
-      min: args.min,
+      currentBalance: args.finance,
+      fixedAmount: args.amount,
       duplicate: args.duplicate,
     });
-    await ctx.reply(`🚀 Live task started! ID: ${task.id}`);
+    await ctx.reply(`🚀 Live task started! ID: ${task.id}\nFixed amount: $${args.amount}`);
   });
 
   // /list command

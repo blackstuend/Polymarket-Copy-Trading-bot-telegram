@@ -4,9 +4,12 @@ export interface CopyTask {
   address: string;
   url: string;
   initialFinance: number;
-  max: number;
-  min: number;
+  currentBalance: number;
+  fixedAmount: number;
   duplicate: boolean;
-  status: 'init' | 'running' | 'stopped';
+  status: 'running' | 'stopped';
   createdAt: number;
+  // Live mode config for on-chain operations (redeem, etc.)
+  privateKey?: string;
+  rpcUrl?: string;
 }
