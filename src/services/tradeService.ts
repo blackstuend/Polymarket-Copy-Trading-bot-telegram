@@ -21,13 +21,6 @@ import {
 const MIN_ORDER_SIZE_USD = 1.0;
 const MIN_ORDER_SIZE_TOKENS = 1.0;
 
-const getTaskWallet = (task: CopyTask): string => {
-    if (task.wallet) {
-        return task.wallet;
-    }
-    return task.address;
-};
-
 interface MockOrderResult {
     success: boolean;
     fillPrice: number;
@@ -216,7 +209,7 @@ export const getMyPositions = async (task: CopyTask): Promise<PositionData[]> =>
             // 從資料庫獲取 positions (mock 模式只用 taskId 查詢)
             const dbPositions = await MyPosition.find({
                 taskId: task.id,
-                proxyWallet: getTaskWallet(task),
+                proxyWallet: task.wallet,
             }).exec();
 
             // 轉換資料庫格式為 API 格式
@@ -335,13 +328,16 @@ const simulateOrderExecution = async (
             const slippage = ((avgFillPrice - targetPrice) / targetPrice) * 100;
 
             if (slippage > 5) {
+                const filledUsd = amount - remainingUsd;
                 return {
                     success: false,
                     fillPrice: avgFillPrice,
                     fillSize: totalTokens,
-                    usdcAmount: amount - remainingUsd,
+                    usdcAmount: filledUsd,
                     slippage,
-                    reason: `Slippage too high: ${slippage.toFixed(2)}%`,
+                    reason:
+                        `Slippage too high: ${slippage.toFixed(2)}% ` +
+                        `(fill $${filledUsd.toFixed(2)} @ $${avgFillPrice.toFixed(4)}, ${totalTokens.toFixed(2)} tokens)`,
                 };
             }
 
@@ -450,7 +446,7 @@ export const handleBuyTrade = async (
     myPosition: PositionData | undefined
 ): Promise<number> => {
     console.log(`[MOCK] Executing BUY strategy for ${trade.slug}...`);
-    const taskWallet = getTaskWallet(task);
+    const taskWallet = task.wallet;
 
     // Skip if price is too high
     if (trade.price > 0.99) {
@@ -490,12 +486,19 @@ export const handleBuyTrade = async (
     );
 
     if (!result.success) {
-        console.log(`[MOCK] Order simulation failed: ${result.reason}`);
+        console.log(
+            `[MOCK] Order simulation failed: ${result.reason} ` +
+            `(copy price: $${trade.price.toFixed(4)}, amount: $${orderCalc.finalAmount.toFixed(2)})`
+        );
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
 
-    console.log(`[MOCK] Bought $${result.usdcAmount.toFixed(2)} at $${result.fillPrice.toFixed(4)} (${result.fillSize.toFixed(2)} tokens, slippage: ${result.slippage.toFixed(2)}%)`);
+    console.log(
+        `[MOCK] Bought $${result.usdcAmount.toFixed(2)} ` +
+        `(copy price: $${trade.price.toFixed(4)}, fill: $${result.fillPrice.toFixed(4)}) ` +
+        `(${result.fillSize.toFixed(2)} tokens, slippage: ${result.slippage.toFixed(2)}%)`
+    );
 
     // Create or update position in database
     await MyPosition.findOneAndUpdate(
@@ -571,7 +574,7 @@ export const handleSellTrade = async (
     copyTraderPosition: PositionData | undefined
 ): Promise<number> => {
     console.log(`[MOCK] Executing SELL strategy for ${trade.slug}...`);
-    const taskWallet = getTaskWallet(task);
+    const taskWallet = task.wallet;
 
     // Skip if no position to sell
     if (!myPosition || myPosition.size <= 0) {
@@ -612,12 +615,19 @@ export const handleSellTrade = async (
     );
 
     if (!result.success) {
-        console.log(`[MOCK] Order simulation failed: ${result.reason}`);
+        console.log(
+            `[MOCK] Order simulation failed: ${result.reason} ` +
+            `(copy price: $${trade.price.toFixed(4)}, amount: ${sellAmount.toFixed(2)} tokens)`
+        );
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
 
-    console.log(`[MOCK] Sold ${result.fillSize.toFixed(2)} tokens at $${result.fillPrice.toFixed(4)} ($${result.usdcAmount.toFixed(2)}, slippage: ${result.slippage.toFixed(2)}%)`);
+    console.log(
+        `[MOCK] Sold ${result.fillSize.toFixed(2)} tokens ` +
+        `(copy price: $${trade.price.toFixed(4)}, fill: $${result.fillPrice.toFixed(4)}) ` +
+        `($${result.usdcAmount.toFixed(2)}, slippage: ${result.slippage.toFixed(2)}%)`
+    );
 
     // Calculate realized PnL
     const soldCost = result.fillSize * myPosition.avgPrice;
@@ -701,7 +711,7 @@ export const handleRedeemTrade = async (
 ): Promise<number> => {
     const positionLabel = trade.slug || trade.conditionId || 'unknown';
     console.log(`[REDEEM] Handling redeem event for ${positionLabel}...`);
-    const taskWallet = getTaskWallet(task);
+    const taskWallet = task.wallet;
 
     if (!myPosition || myPosition.size <= 0) {
         console.log(`[REDEEM] No position to redeem for ${positionLabel}`);
@@ -802,7 +812,7 @@ export const handleRedeemTrade = async (
     return result.value;
 };
 
-export const closePositionOnStartup = async (
+export const forcedClosePosition = async (
     clobClient: ClobClient,
     task: CopyTask,
     myPosition: PositionData,
@@ -811,7 +821,7 @@ export const closePositionOnStartup = async (
     if (!myPosition || myPosition.size <= 0) {
         return 0;
     }
-    const taskWallet = getTaskWallet(task);
+    const taskWallet = task.wallet;
 
     const redeemResolvedPosition = async (context: string): Promise<number> => {
         console.log(`[STARTUP] ${context}`);

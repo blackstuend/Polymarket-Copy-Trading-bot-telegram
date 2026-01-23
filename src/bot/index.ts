@@ -4,6 +4,7 @@ import { addTask, listTasks, stopTask, removeTask } from '../services/taskServic
 import { MyPosition } from '../models/MyPosition.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { CopyTask } from '../types/task.js';
+import { getBidPriceLevels } from '../utils/orderBook.js';
 import type { IMyPosition } from '../models/MyPosition.js';
 import type { IMockTradeRecrod } from '../models/mockTradeRecrod.js';
 
@@ -64,9 +65,79 @@ function formatPositionLine(position: IMyPosition, index: number): string {
   const realizedPnl = Number.isFinite(position.realizedPnl) ? position.realizedPnl : 0;
 
   return `${index}. ${escapeMarkdown(label)}${escapeMarkdown(outcome)} | ` +
-    `size ${size.toFixed(2)} @${avgPrice.toFixed(4)} | value ${formatUsd(currentValue)} | ` +
+    `size ${size.toFixed(2)} | buy ${avgPrice.toFixed(4)} | cur ${curPrice.toFixed(4)} | ` +
+    `value ${formatUsd(currentValue)} | ` +
     `uPnL ${formatSignedUsd(cashPnl)} (${formatPct(percentPnl)}) | ` +
     `rPnL ${formatSignedUsd(realizedPnl)}`;
+}
+
+function getPositionCostBasis(position: IMyPosition, size: number): number {
+  if (Number.isFinite(position.totalBought) && position.totalBought > 0) {
+    return position.totalBought;
+  }
+  if (Number.isFinite(position.initialValue) && position.initialValue > 0) {
+    return position.initialValue;
+  }
+  const avgPrice = Number.isFinite(position.avgPrice) ? position.avgPrice : 0;
+  return avgPrice * size;
+}
+
+async function getOrderBookPriceMap(positions: IMyPosition[]): Promise<Map<string, number>> {
+  const assets = Array.from(
+    new Set(positions.map((pos) => pos.asset).filter((asset) => typeof asset === 'string' && asset))
+  );
+  if (assets.length === 0) return new Map();
+
+  const results = await Promise.all(
+    assets.map(async (asset) => {
+      try {
+        const levels = await getBidPriceLevels(asset);
+        const bestBid = levels[0]?.price;
+        return [asset, bestBid] as const;
+      } catch (error) {
+        console.error(`[list_mock] Failed to fetch order book for ${asset}:`, error);
+        return [asset, undefined] as const;
+      }
+    })
+  );
+
+  const priceMap = new Map<string, number>();
+  for (const [asset, price] of results) {
+    if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+      priceMap.set(asset, price);
+    }
+  }
+  return priceMap;
+}
+
+function applyOrderBookPrices(
+  positions: IMyPosition[],
+  priceMap: Map<string, number>
+): IMyPosition[] {
+  if (priceMap.size === 0) return positions;
+
+  return positions.map((position) => {
+    const price = priceMap.get(position.asset);
+    if (!price) return position;
+
+    const size = Number.isFinite(position.size) ? position.size : 0;
+    const currentValue = size * price;
+    const costBasis = getPositionCostBasis(position, size);
+    const cashPnl = currentValue - costBasis;
+    const percentPnl = costBasis > 0 ? (cashPnl / costBasis) * 100 : null;
+    const base =
+      typeof (position as IMyPosition & { toObject?: () => IMyPosition }).toObject === 'function'
+        ? (position as IMyPosition & { toObject?: () => IMyPosition }).toObject()
+        : position;
+
+    return {
+      ...base,
+      curPrice: price,
+      currentValue,
+      cashPnl,
+      percentPnl,
+    } as IMyPosition;
+  });
 }
 
 function computePositionStats(positions: IMyPosition[]): {
@@ -226,9 +297,8 @@ function setupCommands(bot: Telegraf): void {
     await ctx.reply(`Mock tasks: ${tasks.length}`);
 
     for (const task of tasks) {
-      const taskWallet = task.wallet ?? task.address;
       const [positions, recentTrades, realizedAgg] = await Promise.all([
-        MyPosition.find({ taskId: task.id, proxyWallet: taskWallet }).exec(),
+        MyPosition.find({ taskId: task.id, proxyWallet: task.wallet }).exec(),
         mockTradeRecrod
           .find({ taskId: task.id })
           .sort({ executedAt: -1 })
@@ -241,7 +311,9 @@ function setupCommands(bot: Telegraf): void {
       ]);
 
       const realizedPnl = realizedAgg[0]?.total ?? 0;
-      const positionStats = computePositionStats(positions);
+      const priceMap = await getOrderBookPriceMap(positions);
+      const pricedPositions = applyOrderBookPrices(positions, priceMap);
+      const positionStats = computePositionStats(pricedPositions);
       const equity = task.currentBalance + positionStats.totalPositionValue;
       const totalPnl = equity - task.initialFinance;
       const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
@@ -252,7 +324,7 @@ function setupCommands(bot: Telegraf): void {
           `${lastTrade.title || lastTrade.slug || lastTrade.conditionId || 'unknown'}`
         : 'n/a';
 
-      const openPositions = positions.filter((pos) => (pos.size ?? 0) > 0);
+      const openPositions = pricedPositions.filter((pos) => (pos.size ?? 0) > 0);
       const sortedPositions = [...openPositions].sort((a, b) => {
         const aValue = Number.isFinite(a.currentValue)
           ? a.currentValue
@@ -270,11 +342,8 @@ function setupCommands(bot: Telegraf): void {
         `Address: \`${escapeMarkdown(task.address)}\``,
       ];
 
-      if (task.wallet) {
-        lines.push(`Wallet: \`${escapeMarkdown(task.wallet)}\``);
-      }
-
       lines.push(
+        `Wallet: \`${escapeMarkdown(task.wallet)}\``,
         `Status: ${escapeMarkdown(task.status)}`,
         `Fixed amount: ${formatUsd(task.fixedAmount)} | Duplicate: ${task.duplicate ? 'true' : 'false'}`,
         `Initial: ${formatUsd(task.initialFinance)} | Balance: ${formatUsd(task.currentBalance)} | Equity: ${formatUsd(equity)}`,

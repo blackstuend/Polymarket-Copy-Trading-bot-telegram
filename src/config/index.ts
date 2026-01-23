@@ -14,6 +14,7 @@ export const config = {
   },
   polymarket: {
     clobHttpUrl: process.env.POLYMARKET_CLOB_HTTP_URL || 'https://clob.polymarket.com',
+    rpcUrl: process.env.RPC_URL || '',
     chainId: 137, // Polygon mainnet
   },
 } as const;
@@ -31,5 +32,8 @@ export function validateConfig(): void {
   }
   if (!config.redis.port) {
     throw new Error('REDIS_PORT is required');
+  }
+  if (!config.polymarket.rpcUrl) {
+    throw new Error('RPC_URL is required');
   }
 }

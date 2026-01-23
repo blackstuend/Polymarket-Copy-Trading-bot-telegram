@@ -4,7 +4,7 @@ import { scheduleTaskJob, createWorker, TaskJobData, QUEUE_NAMES } from '../serv
 import { withTaskLock } from '../services/taskLock.js';
 import { CopyTask } from '../types/task.js';
 import {
-  closePositionOnStartup,
+  forcedClosePosition,
   getCopyTraderPositions,
   getMyPositions,
   getPendingTrades,
@@ -18,7 +18,7 @@ import { getClobClient } from '../services/polymarket.js';
 
 let worker: Worker<TaskJobData> | null = null;
 const taskRunCounts = new Map<string, number>();
-const reconcileEveryRuns = 30;
+const syncEveryRuns = 30;
 
 export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
   if (!worker) {
@@ -29,7 +29,7 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
     let restoredCount = 0;
     for (const task of runningTasks) {
       if (task.status === 'running') {
-        await reconcilePositionsOnStartup(task);
+        await syncPositions(task);
         await scheduleTaskJob(task.id);
         restoredCount++;
       }
@@ -42,7 +42,7 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
   return worker;
 }
 
-async function reconcilePositionsOnStartup(task: CopyTask): Promise<void> {
+async function syncPositions(task: CopyTask): Promise<void> {
   try {
     const myPositions = await getMyPositions(task);
     if (myPositions.length === 0) {
@@ -65,7 +65,7 @@ async function reconcilePositionsOnStartup(task: CopyTask): Promise<void> {
     for (const myPosition of myPositions) {
       const copyTraderPosition = copyPositionsByCondition.get(myPosition.conditionId);
       if (!copyTraderPosition || copyTraderPosition.size <= 0) {
-        const received = await closePositionOnStartup(client, task, myPosition, liveConfig);
+        const received = await forcedClosePosition(client, task, myPosition, liveConfig);
         if (received > 0) {
           task.currentBalance += received;
           await updateTask(task);
@@ -75,10 +75,10 @@ async function reconcilePositionsOnStartup(task: CopyTask): Promise<void> {
     }
 
     if (closedCount > 0) {
-      console.log(`[Task ${task.id}] Startup sync closed ${closedCount} position(s)`);
+      console.log(`[Task ${task.id}] Position sync closed ${closedCount} position(s)`);
     }
   } catch (error) {
-    console.error(`[Task ${task.id}] Error during startup position sync:`, error);
+    console.error(`[Task ${task.id}] Error during position sync:`, error);
   }
 }
 
@@ -106,8 +106,8 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
 
       const runCount = (taskRunCounts.get(taskId) ?? 0) + 1;
       taskRunCounts.set(taskId, runCount);
-      if (runCount % reconcileEveryRuns === 0) {
-        await reconcilePositionsOnStartup(task);
+      if (runCount % syncEveryRuns === 0) {
+        await syncPositions(task);
       }
 
       // Execute the task
@@ -139,7 +139,7 @@ async function executeTask(task: CopyTask): Promise<void> {
     console.log(`[Task ${task.id}] Found ${trades.length} pending trade(s)`);
 
     // Get my positions (from DB for mock, from API for live)
-    const myPositions = await getMyPositions(task);
+    let myPositions = await getMyPositions(task);
 
     // Get copy trader's current positions from API
     const copyTraderPositions = await getCopyTraderPositions(task.address);
@@ -150,6 +150,11 @@ async function executeTask(task: CopyTask): Promise<void> {
     for (const trade of trades) {
       // Mark as processing to avoid duplicate processing
       await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 1 });
+
+      // In mock mode, refresh positions per trade to avoid stale snapshots.
+      if (task.type === 'mock') {
+        myPositions = await getMyPositions(task);
+      }
 
       const myPosition = myPositions.find((pos) => pos.conditionId === trade.conditionId);
       const copyTraderPosition = copyTraderPositions.find((pos) => pos.conditionId === trade.conditionId);

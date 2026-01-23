@@ -51,10 +51,10 @@ async function removeTaskDatabaseRecords(taskIds: string[]): Promise<void> {
   ]);
 }
 
-export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'createdAt'>): Promise<CopyTask> {
+export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'createdAt' | 'wallet'> & { wallet?: string }): Promise<CopyTask> {
   const redis = await getRedisClient();
   const id = await generateUniqueId();
-  const wallet = taskData.wallet ?? (taskData.type === 'mock' ? generateMockWalletAddress() : undefined);
+  const wallet = taskData.wallet ?? generateMockWalletAddress();
   const task: CopyTask = {
     ...taskData,
     wallet,
