@@ -131,7 +131,7 @@ async function executeTask(task: CopyTask): Promise<void> {
 
   try {
     const trades = await getPendingTrades(task.id);
-    
+
     if (trades.length === 0) {
       return;
     }

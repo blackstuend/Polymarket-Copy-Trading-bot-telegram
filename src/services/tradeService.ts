@@ -1,6 +1,5 @@
 import { UserActivity, IUserActivity } from '../models/UserActivity.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
-import { UserPosition } from '../models/UserPosition.js';
 import { MyPosition } from '../models/MyPosition.js';
 import { fetchData } from '../utils/fetchData.js';
 import { CopyTask } from '../types/task.js';
@@ -77,100 +76,58 @@ export const syncTradeData = async (task: CopyTask) => {
         const apiUrl = `https://data-api.polymarket.com/activity?user=${address}`;
         const activities = await fetchData(apiUrl);
 
-        if (Array.isArray(activities) && activities.length > 0) {
-            // Process each activity
-            for (const activity of activities) {
-                // Ensure timestamp is comparable. If API returns string, we might need parsing. 
-                // However, snippet assumes activity.timestamp is a number.
-                if (activity.timestamp < TOO_OLD_TIMESTAMP) {
-                    continue;
-                }
-
-                // Check if this trade already exists in database
-                const existingActivity = await UserActivity.findOne({
-                    transactionHash: activity.transactionHash,
-                }).exec();
-
-                if (existingActivity) {
-                    continue; // Already processed this trade
-                }
-
-                // Save new trade to database
-                const newActivity = new UserActivity({
-                    proxyWallet: activity.proxyWallet,
-                    timestamp: activity.timestamp,
-                    conditionId: activity.conditionId,
-                    type: activity.type,
-                    size: activity.size,
-                    usdcSize: activity.usdcSize,
-                    transactionHash: activity.transactionHash,
-                    price: activity.price,
-                    asset: activity.asset,
-                    side: activity.side,
-                    outcomeIndex: activity.outcomeIndex,
-                    title: activity.title,
-                    slug: activity.slug,
-                    icon: activity.icon,
-                    eventSlug: activity.eventSlug,
-                    outcome: activity.outcome,
-                    name: activity.name,
-                    pseudonym: activity.pseudonym,
-                    bio: activity.bio,
-                    profileImage: activity.profileImage,
-                    profileImageOptimized: activity.profileImageOptimized,
-                    bot: false,
-                    botExcutedTime: 0,
-                    taskId: task.id,
-                });
-
-                await newActivity.save();
-                console.log(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}: ${activity.transactionHash}`);
-            }
+        if (!Array.isArray(activities) || activities.length === 0) {
+            return;
         }
 
-        // Also fetch and update positions
-        const positionsUrl = `https://data-api.polymarket.com/positions?user=${address}`;
-        const positions = await fetchData(positionsUrl);
+        // Track seen conditionIds (API returns sorted, first one is latest)
+        const seenConditions = new Set<string>();
 
-        if (Array.isArray(positions) && positions.length > 0) {
-            for (const position of positions) {
-                // Update or create position
-                // Use proxyWallet from position if available, else fallback to task address
-                const wallet = position.proxyWallet || address;
-
-                await UserPosition.findOneAndUpdate(
-                    { proxyWallet: wallet, asset: position.asset, conditionId: position.conditionId, taskId: task.id },
-                    {
-                        proxyWallet: wallet,
-                        asset: position.asset,
-                        conditionId: position.conditionId,
-                        size: position.size,
-                        avgPrice: position.avgPrice,
-                        initialValue: position.initialValue,
-                        currentValue: position.currentValue,
-                        cashPnl: position.cashPnl,
-                        percentPnl: position.percentPnl,
-                        totalBought: position.totalBought,
-                        realizedPnl: position.realizedPnl,
-                        percentRealizedPnl: position.percentRealizedPnl,
-                        curPrice: position.curPrice,
-                        redeemable: position.redeemable,
-                        mergeable: position.mergeable,
-                        title: position.title,
-                        slug: position.slug,
-                        icon: position.icon,
-                        eventSlug: position.eventSlug,
-                        outcome: position.outcome,
-                        outcomeIndex: position.outcomeIndex,
-                        oppositeOutcome: position.oppositeOutcome,
-                        oppositeAsset: position.oppositeAsset,
-                        endDate: position.endDate,
-                        negativeRisk: position.negativeRisk,
-                        taskId: task.id,
-                    },
-                    { upsert: true }
-                );
+        for (const activity of activities) {
+            if (activity.timestamp < TOO_OLD_TIMESTAMP) {
+                continue;
             }
+
+            // Check if already in DB
+            const exists = await UserActivity.findOne({ transactionHash: activity.transactionHash }).exec();
+            if (exists) {
+                seenConditions.add(activity.conditionId);
+                continue;
+            }
+
+            // Duplicate conditionId → mark as processed
+            const isDuplicate = seenConditions.has(activity.conditionId);
+            seenConditions.add(activity.conditionId);
+
+            const newActivity = new UserActivity({
+                proxyWallet: activity.proxyWallet,
+                timestamp: activity.timestamp,
+                conditionId: activity.conditionId,
+                type: activity.type,
+                size: activity.size,
+                usdcSize: activity.usdcSize,
+                transactionHash: activity.transactionHash,
+                price: activity.price,
+                asset: activity.asset,
+                side: activity.side,
+                outcomeIndex: activity.outcomeIndex,
+                title: activity.title,
+                slug: activity.slug,
+                icon: activity.icon,
+                eventSlug: activity.eventSlug,
+                outcome: activity.outcome,
+                name: activity.name,
+                pseudonym: activity.pseudonym,
+                bio: activity.bio,
+                profileImage: activity.profileImage,
+                profileImageOptimized: activity.profileImageOptimized,
+                bot: isDuplicate,
+                botExcutedTime: isDuplicate ? 888 : 0,
+                taskId: task.id,
+            });
+
+            await newActivity.save();
+            console.log(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}: ${activity.transactionHash}${isDuplicate ? ' (duplicate, skipped)' : ''}`);
         }
     } catch (error) {
         console.error(
