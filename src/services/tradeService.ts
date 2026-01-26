@@ -954,7 +954,7 @@ export const redeemPosition = async (
  */
 export const getCopyTraderPositions = async (address: string): Promise<PositionData[]> => {
     try {
-        const positionsUrl = `https://data-api.polymarket.com/positions?user=${address}`;
+        const positionsUrl = `https://data-api.polymarket.com/positions?user=${address}&redeemable=false&limit=500`;
         const apiPositions = await fetchData(positionsUrl);
 
         if (Array.isArray(apiPositions)) {
