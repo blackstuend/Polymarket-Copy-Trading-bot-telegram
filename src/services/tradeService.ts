@@ -711,7 +711,6 @@ export const handleRedeemTrade = async (
 ): Promise<number> => {
     const positionLabel = trade.slug || trade.conditionId || 'unknown';
     console.log(`[REDEEM] Handling redeem event for ${positionLabel}...`);
-    const taskWallet = task.wallet;
 
     if (!myPosition || myPosition.size <= 0) {
         console.log(`[REDEEM] No position to redeem for ${positionLabel}`);
@@ -719,96 +718,18 @@ export const handleRedeemTrade = async (
         return 0;
     }
 
-    if (task.type === 'mock') {
-        if (!task.rpcUrl) {
-            console.log(`[REDEEM] Missing rpcUrl for on-chain payout check`);
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
-            return 0;
-        }
+    const liveConfig = task.type === 'live' && task.privateKey && task.rpcUrl
+        ? { privateKey: task.privateKey, rpcUrl: task.rpcUrl }
+        : undefined;
 
-        const payoutInfo = await getOutcomePayoutRatio(
-            task.rpcUrl,
-            myPosition.conditionId,
-            myPosition.outcomeIndex
-        );
-
-        if (!payoutInfo.settled) {
-            const reason = payoutInfo.error || 'Condition not settled';
-            console.log(`[REDEEM] On-chain payout unavailable for ${positionLabel}: ${reason}`);
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
-            return 0;
-        }
-
-        const payoutRatio = payoutInfo.payout;
-        const redeemValue = myPosition.size * payoutRatio;
-        const costBasis = myPosition.avgPrice * myPosition.size;
-        const realizedPnl = redeemValue - costBasis;
-
-        await persistMockTradeRecrod({
-            taskId: task.id,
-            side: 'REDEEM',
-            proxyWallet: taskWallet,
-            asset: myPosition.asset || trade.asset,
-            conditionId: myPosition.conditionId || trade.conditionId,
-            outcomeIndex: myPosition.outcomeIndex ?? trade.outcomeIndex,
-            fillPrice: payoutRatio,
-            fillSize: myPosition.size,
-            usdcAmount: redeemValue,
-            slippage: 0,
-            costBasisPrice: myPosition.avgPrice,
-            soldCost: costBasis,
-            realizedPnl: realizedPnl,
-            positionSizeBefore: myPosition.size,
-            positionSizeAfter: 0,
-            sourceActivityId: trade._id,
-            sourceTransactionHash: trade.transactionHash,
-            sourceTimestamp: trade.timestamp,
-            title: myPosition.title || trade.title,
-            slug: myPosition.slug || trade.slug,
-            eventSlug: myPosition.eventSlug || trade.eventSlug,
-            outcome: myPosition.outcome || trade.outcome,
-        });
-
-        await MyPosition.deleteOne({
-            taskId: task.id,
-            asset: myPosition.asset,
-            conditionId: myPosition.conditionId,
-            proxyWallet: taskWallet,
-        });
-
-        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
-
-        console.log(`[MOCK] Redeemed position, payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
-        return redeemValue;
-    }
-
-    if (!task.privateKey || !task.rpcUrl) {
-        console.log(`[REDEEM] Live mode requires privateKey and rpcUrl for redemption`);
-        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
-        return 0;
-    }
-
-    const result = await redeemPosition(task.privateKey, task.rpcUrl, myPosition);
-
-    if (!result.success) {
-        console.log(`[REDEEM] Redemption failed: ${result.error}`);
-        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
-        return 0;
-    }
-
-    const costBasis = myPosition.avgPrice * myPosition.size;
-    const realizedPnl = result.value - costBasis;
-
-    await MyPosition.deleteOne({
-        taskId: task.id,
-        asset: myPosition.asset,
-        conditionId: myPosition.conditionId,
-        proxyWallet: taskWallet,
-    });
+    const result = await redeemPosition(task, myPosition, liveConfig);
 
     await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
 
-    console.log(`[REDEEM] Redeemed position, value: $${result.value.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
+    if (!result.success) {
+        return 0;
+    }
+
     return result.value;
 };
 
@@ -823,95 +744,6 @@ export const forcedClosePosition = async (
     }
     const taskWallet = task.wallet;
 
-    const redeemResolvedPosition = async (context: string): Promise<number> => {
-        console.log(`[STARTUP] ${context}`);
-
-        if (task.type === 'mock') {
-            if (!task.rpcUrl) {
-                console.log(`[STARTUP] Missing rpcUrl for on-chain payout check`);
-                return 0;
-            }
-
-            const payoutInfo = await getOutcomePayoutRatio(
-                task.rpcUrl,
-                myPosition.conditionId,
-                myPosition.outcomeIndex
-            );
-
-            if (!payoutInfo.settled) {
-                const reason = payoutInfo.error || 'Condition not settled';
-                console.log(`[STARTUP] On-chain payout unavailable for ${myPosition.slug}: ${reason}`);
-                return 0;
-            }
-
-            const payoutRatio = payoutInfo.payout;
-
-            const redeemValue = myPosition.size * payoutRatio;
-            const costBasis = myPosition.avgPrice * myPosition.size;
-            const realizedPnl = redeemValue - costBasis;
-
-            await persistMockTradeRecrod({
-                taskId: task.id,
-                side: 'REDEEM',
-                proxyWallet: taskWallet,
-                asset: myPosition.asset,
-                conditionId: myPosition.conditionId,
-                outcomeIndex: myPosition.outcomeIndex,
-                fillPrice: payoutRatio,
-                fillSize: myPosition.size,
-                usdcAmount: redeemValue,
-                slippage: 0,
-                costBasisPrice: myPosition.avgPrice,
-                soldCost: costBasis,
-                realizedPnl: realizedPnl,
-                positionSizeBefore: myPosition.size,
-                positionSizeAfter: 0,
-                title: myPosition.title,
-                slug: myPosition.slug,
-                eventSlug: myPosition.eventSlug,
-                outcome: myPosition.outcome,
-            });
-
-            // Delete position (settled)
-            await MyPosition.deleteOne({
-                taskId: task.id,
-                asset: myPosition.asset,
-                conditionId: myPosition.conditionId,
-                proxyWallet: taskWallet,
-            });
-
-            console.log(`[STARTUP] Redeemed position (mock), payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
-            return redeemValue;
-        }
-
-        // Live mode: call redeem contract
-        if (!liveConfig) {
-            console.log(`[STARTUP] Live mode requires privateKey and rpcUrl for redemption`);
-            return 0;
-        }
-
-        const result = await redeemPosition(liveConfig.privateKey, liveConfig.rpcUrl, myPosition);
-
-        if (result.success) {
-            const costBasis = myPosition.avgPrice * myPosition.size;
-            const realizedPnl = result.value - costBasis;
-
-            // Delete position (settled)
-            await MyPosition.deleteOne({
-                taskId: task.id,
-                asset: myPosition.asset,
-                conditionId: myPosition.conditionId,
-                proxyWallet: taskWallet,
-            });
-
-            console.log(`[STARTUP] Redeemed position (live), value: $${result.value.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
-            return result.value;
-        } else {
-            console.log(`[STARTUP] Redemption failed: ${result.error}`);
-            return 0;
-        }
-    };
-
     // Normal case: market is still active, try to sell via order book
     const orderBook = await clobClient.getOrderBook(myPosition.asset);
     const validBids = (orderBook.bids || [])
@@ -922,7 +754,9 @@ export const forcedClosePosition = async (
         .filter((bid) => bid.price > 0 && bid.size > 0);
 
     if (validBids.length === 0) {
-        return redeemResolvedPosition('No bids in order book; treating as resolved');
+        console.log(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
+        const result = await redeemPosition(task, myPosition, liveConfig);
+        return result.value;
     }
 
     const bestBidPrice = validBids.reduce(
@@ -933,11 +767,11 @@ export const forcedClosePosition = async (
     const targetPrice = bestBidPrice;
 
     if (targetPrice <= 0) {
-        console.log(`[STARTUP] Missing current price for ${myPosition.slug}, skipping close`);
+        console.log(`[FORCED_CLOSE] Missing current price for ${myPosition.slug}, skipping close`);
         return 0;
     }
 
-    console.log(`[STARTUP] Closing position for ${myPosition.slug}...`);
+    console.log(`[FORCED_CLOSE] Closing position for ${myPosition.slug}...`);
 
     const result = await simulateOrderExecution(
         clobClient,
@@ -950,10 +784,12 @@ export const forcedClosePosition = async (
 
     if (!result.success) {
         if (result.reason === 'No bids available in order book') {
-            return redeemResolvedPosition('No bids in order book; treating as resolved');
+            console.log(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
+            const redeemResult = await redeemPosition(task, myPosition, liveConfig);
+            return redeemResult.value;
         }
 
-        console.log(`[STARTUP] Order simulation failed: ${result.reason}`);
+        console.log(`[FORCED_CLOSE] Order simulation failed: ${result.reason}`);
         return 0;
     }
 
@@ -971,7 +807,7 @@ export const forcedClosePosition = async (
             conditionId: myPosition.conditionId,
             proxyWallet: taskWallet,
         });
-        console.log(`[STARTUP] Position closed`);
+        console.log(`[FORCED_CLOSE] Position closed`);
     } else {
         const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
         await MyPosition.updateOne(
@@ -990,7 +826,7 @@ export const forcedClosePosition = async (
                 },
             }
         );
-        console.log(`[STARTUP] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
+        console.log(`[FORCED_CLOSE] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
     }
 
     if (task.type === 'mock') {
@@ -1017,47 +853,100 @@ export const forcedClosePosition = async (
         });
     }
 
-    console.log(`[STARTUP] Realized PnL: $${realizedPnl.toFixed(2)}`);
+    console.log(`[FORCED_CLOSE] Realized PnL: $${realizedPnl.toFixed(2)}`);
 
     return result.usdcAmount;
 };
 
 /**
- * Redeem a resolved position on-chain
- * @param privateKey - Private key for signing transaction
- * @param rpcUrl - Polygon RPC URL
+ * Redeem a resolved position (supports both mock and live modes)
+ * @param task - The copy task
  * @param position - Position to redeem
- * @returns Object with success status and redeemed value
+ * @param liveConfig - Optional live config with privateKey and rpcUrl (required for live mode)
+ * @returns Object with success status, redeemed value, and realized PnL
  */
 export const redeemPosition = async (
-    privateKey: string,
-    rpcUrl: string,
-    position: PositionData
-): Promise<{ success: boolean; value: number; error?: string }> => {
+    task: CopyTask,
+    position: PositionData,
+    liveConfig?: { privateKey: string; rpcUrl: string }
+): Promise<{ success: boolean; value: number; realizedPnl: number; error?: string }> => {
+    const taskWallet = task.wallet;
+    const positionLabel = position.slug || position.conditionId || 'unknown';
+
+    if (!position || position.size <= 0) {
+        return { success: false, value: 0, realizedPnl: 0, error: 'No position to redeem' };
+    }
+
+    const rpcUrl = task.rpcUrl || liveConfig?.rpcUrl;
+    if (!rpcUrl) {
+        console.log(`[REDEEM] Missing rpcUrl for on-chain payout check`);
+        return { success: false, value: 0, realizedPnl: 0, error: 'Missing rpcUrl' };
+    }
+
+    const payoutInfo = await getOutcomePayoutRatio(rpcUrl, position.conditionId, position.outcomeIndex);
+    if (!payoutInfo.settled) {
+        const reason = payoutInfo.error || 'Condition not settled';
+        console.log(`[REDEEM] On-chain payout unavailable for ${positionLabel}: ${reason}`);
+        return { success: false, value: 0, realizedPnl: 0, error: reason };
+    }
+
+    const payoutRatio = payoutInfo.payout;
+    const redeemValue = position.size * payoutRatio;
+    const costBasis = position.avgPrice * position.size;
+    const realizedPnl = redeemValue - costBasis;
+
+    if (task.type === 'mock') {
+        await persistMockTradeRecrod({
+            taskId: task.id,
+            side: 'REDEEM',
+            proxyWallet: taskWallet,
+            asset: position.asset,
+            conditionId: position.conditionId,
+            outcomeIndex: position.outcomeIndex,
+            fillPrice: payoutRatio,
+            fillSize: position.size,
+            usdcAmount: redeemValue,
+            slippage: 0,
+            costBasisPrice: position.avgPrice,
+            soldCost: costBasis,
+            realizedPnl: realizedPnl,
+            positionSizeBefore: position.size,
+            positionSizeAfter: 0,
+            title: position.title,
+            slug: position.slug,
+            eventSlug: position.eventSlug,
+            outcome: position.outcome,
+        });
+
+        await MyPosition.deleteOne({
+            taskId: task.id,
+            asset: position.asset,
+            conditionId: position.conditionId,
+            proxyWallet: taskWallet,
+        });
+
+        console.log(`[REDEEM] Redeemed position (mock), payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
+        return { success: true, value: redeemValue, realizedPnl };
+    }
+
+    // Live mode: call redeem contract
+    if (!liveConfig) {
+        console.log(`[REDEEM] Live mode requires privateKey and rpcUrl for redemption`);
+        return { success: false, value: 0, realizedPnl: 0, error: 'Missing liveConfig for live mode' };
+    }
+
     try {
-        const provider = new ethers.JsonRpcProvider(rpcUrl);
-        const wallet = new ethers.Wallet(privateKey, provider);
+        const provider = new ethers.JsonRpcProvider(liveConfig.rpcUrl);
+        const wallet = new ethers.Wallet(liveConfig.privateKey, provider);
         const ctfContract = new ethers.Contract(CTF_CONTRACT_ADDRESS, CTF_ABI, wallet);
 
-        const payoutInfo = await getOutcomePayoutRatio(rpcUrl, position.conditionId, position.outcomeIndex);
-        if (!payoutInfo.settled) {
-            const reason = payoutInfo.error || 'Condition not settled';
-            console.log(`[REDEEM] Skipping redemption: ${reason}`);
-            return { success: false, value: 0, error: reason };
-        }
-
         const conditionIdBytes32 = toConditionIdBytes32(position.conditionId);
-
-        // parentCollectionId is always zero for Polymarket
         const parentCollectionId = ethers.ZeroHash;
-
-        // indexSets: [1, 2] represents both outcome collections
         const indexSets = [1, 2];
 
         console.log(`[REDEEM] Attempting redemption for ${position.title || position.slug}...`);
         console.log(`[REDEEM] Condition ID: ${conditionIdBytes32}`);
 
-        // Get current gas price from network
         const feeData = await provider.getFeeData();
         const gasPrice = feeData.gasPrice || feeData.maxFeePerGas;
 
@@ -1065,7 +954,6 @@ export const redeemPosition = async (
             throw new Error('Could not determine gas price');
         }
 
-        // Add 20% buffer to ensure transaction goes through
         const adjustedGasPrice = (gasPrice * 120n) / 100n;
 
         const tx = await ctfContract.redeemPositions(
@@ -1084,18 +972,23 @@ export const redeemPosition = async (
         const receipt = await tx.wait();
 
         if (receipt && receipt.status === 1) {
-            const redeemValue = position.size * payoutInfo.payout;
+            await MyPosition.deleteOne({
+                taskId: task.id,
+                asset: position.asset,
+                conditionId: position.conditionId,
+                proxyWallet: taskWallet,
+            });
 
-            console.log(`[REDEEM] Redemption successful! Gas used: ${receipt.gasUsed.toString()}`);
-            return { success: true, value: redeemValue };
+            console.log(`[REDEEM] Redemption successful! Gas used: ${receipt.gasUsed.toString()}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
+            return { success: true, value: redeemValue, realizedPnl };
         } else {
             console.log(`[REDEEM] Transaction failed`);
-            return { success: false, value: 0, error: 'Transaction reverted' };
+            return { success: false, value: 0, realizedPnl: 0, error: 'Transaction reverted' };
         }
     } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.log(`[REDEEM] Redemption failed: ${errorMessage}`);
-        return { success: false, value: 0, error: errorMessage };
+        return { success: false, value: 0, realizedPnl: 0, error: errorMessage };
     }
 };
 
