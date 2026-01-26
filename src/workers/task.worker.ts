@@ -151,11 +151,6 @@ async function executeTask(task: CopyTask): Promise<void> {
       // Mark as processing to avoid duplicate processing
       await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 1 });
 
-      // In mock mode, refresh positions per trade to avoid stale snapshots.
-      if (task.type === 'mock') {
-        myPositions = await getMyPositions(task);
-      }
-
       const myPosition = myPositions.find((pos) => pos.conditionId === trade.conditionId);
       const copyTraderPosition = copyTraderPositions.find((pos) => pos.conditionId === trade.conditionId);
 
