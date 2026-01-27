@@ -1,0 +1,60 @@
+services:
+  telegram-bot:
+    build: .
+    container_name: telegram-bot
+    restart: always
+    env_file:
+      - .env
+    # Alternatively, you can pass environment variables directly:
+    # environment:
+    #   - BOT_TOKEN=${BOT_TOKEN}
+    dns:
+      - 8.8.8.8
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MONGODB_URI=mongodb://mongo:27017/copy-polymarket
+    networks:
+      - app-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: copy-polymarket-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7
+    container_name: copy-polymarket-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis-data:
+  mongo-data:
+
+
+networks:
+  app-network:
+    driver: bridge
