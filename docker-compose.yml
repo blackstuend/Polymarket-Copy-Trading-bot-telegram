@@ -3,8 +3,9 @@ services:
     build: .
     container_name: telegram-bot
     restart: always
-    env_file:
-      - .env
+    environment:
+      - REDIS_URL=redis://:polymarket_redis_secret@redis:6379
+      - MONGO_URL=mongodb://admin:admin123@mongo:27017/?authSource=admin
     networks:
       - app-network
     depends_on:
@@ -17,12 +18,13 @@ services:
     image: redis:7-alpine
     container_name: copy-polymarket-redis
     restart: unless-stopped
+    command: redis-server --requirepass polymarket_redis_secret
     volumes:
       - redis-data:/data
     networks:
       - app-network
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: [ "CMD", "redis-cli", "-a", "polymarket_redis_secret", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,14 +34,14 @@ services:
     container_name: copy-polymarket-mongo
     restart: unless-stopped
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=mongo
-      - MONGO_INITDB_ROOT_PASSWORD=LJMzkTaoVLbicPgsPCeWOClXaDifcgTW
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
     volumes:
       - mongo-data:/data/db
     networks:
       - app-network
     healthcheck:
-      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "-u", "mongo", "-p", "LJMzkTaoVLbicPgsPCeWOClXaDifcgTW" ]
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "-u", "admin", "-p", "admin123" ]
       interval: 10s
       timeout: 5s
       retries: 5
