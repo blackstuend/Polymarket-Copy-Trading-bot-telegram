@@ -1,4 +1,4 @@
-import { validateConfig } from './config/index.js';
+import { config, validateConfig } from './config/index.js';
 import { createBot, stopBot } from './bot/index.js';
 import { getRedisClient, closeRedisConnection } from './services/redis.js';
 import { connectToMongoDB, closeMongoDBConnection } from './services/mongodb.js';
@@ -12,6 +12,9 @@ async function main(): Promise<void> {
 
   // Validate configuration
   validateConfig();
+  
+  console.log(`📡 Connecting to Redis: ${config.redis.url ? '(URL connection)' : `${config.redis.host}:${config.redis.port}`}`);
+  console.log(`📡 Connecting to MongoDB: ${config.mongodb.uri ? '(URI connection)' : `${config.mongodb.host}:${config.mongodb.port}`}`);
 
   // Initialize CLOB client early (used by workers)
   initClobClient();

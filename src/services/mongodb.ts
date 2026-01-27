@@ -4,7 +4,13 @@ import { UserPosition } from '../models/UserPosition.js';
 
 export async function connectToMongoDB(): Promise<void> {
   try {
-    const uri = config.mongodb.uri as string;
+    let uri = config.mongodb.uri;
+
+    if (!uri) {
+      const { user, password, host, port } = config.mongodb;
+      const auth = user && password ? `${user}:${password}@` : '';
+      uri = `mongodb://${auth}${host}:${port}/copy-polymarket`;
+    }
     
     await mongoose.connect(uri);
 
