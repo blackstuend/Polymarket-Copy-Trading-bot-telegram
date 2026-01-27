@@ -34,7 +34,7 @@ export function createQueue<T>(name: string): Queue<T> {
         type: 'exponential',
         delay: 1000,
       },
-      removeOnComplete: 100,
+      removeOnComplete: true,  // 完成後立即刪除，不保留歷史
       removeOnFail: 50,
     },
   });
