@@ -8,20 +8,9 @@ export async function getRedisClient(): Promise<RedisClientType> {
     return redisClient;
   }
 
-  if (config.redis.url) {
-    redisClient = createClient({
-      url: config.redis.url,
-    });
-  } else {
-    redisClient = createClient({
-      socket: {
-        host: config.redis.host,
-        port: config.redis.port,
-      },
-      password: config.redis.password,
-      username: config.redis.user,
-    });
-  }
+  redisClient = createClient({
+    url: config.redis.url,
+  });
 
   redisClient.on('connect', () => {
     console.log('✅ Redis connected');

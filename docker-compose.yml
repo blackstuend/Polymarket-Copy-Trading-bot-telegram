@@ -5,15 +5,6 @@ services:
     restart: always
     env_file:
       - .env
-    # Alternatively, you can pass environment variables directly:
-    # environment:
-    #   - BOT_TOKEN=${BOT_TOKEN}
-    dns:
-      - 8.8.8.8
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - MONGODB_URI=mongodb://mongo:27017/copy-polymarket
     networks:
       - app-network
     depends_on:
@@ -40,12 +31,15 @@ services:
     image: mongo:7
     container_name: copy-polymarket-mongo
     restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=mongo
+      - MONGO_INITDB_ROOT_PASSWORD=LJMzkTaoVLbicPgsPCeWOClXaDifcgTW
     volumes:
       - mongo-data:/data/db
     networks:
       - app-network
     healthcheck:
-      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "-u", "mongo", "-p", "LJMzkTaoVLbicPgsPCeWOClXaDifcgTW" ]
       interval: 10s
       timeout: 5s
       retries: 5

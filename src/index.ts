@@ -13,8 +13,8 @@ async function main(): Promise<void> {
   // Validate configuration
   validateConfig();
   
-  console.log(`📡 Connecting to Redis: ${config.redis.url ? '(URL connection)' : `${config.redis.host}:${config.redis.port}`}`);
-  console.log(`📡 Connecting to MongoDB: ${config.mongodb.uri ? '(URI connection)' : `${config.mongodb.host}:${config.mongodb.port}`}`);
+  console.log('📡 Connecting to Redis...');
+  console.log('📡 Connecting to MongoDB...');
 
   // Initialize CLOB client early (used by workers)
   initClobClient();

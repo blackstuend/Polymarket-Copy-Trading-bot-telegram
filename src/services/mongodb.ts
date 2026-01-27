@@ -4,15 +4,7 @@ import { UserPosition } from '../models/UserPosition.js';
 
 export async function connectToMongoDB(): Promise<void> {
   try {
-    let uri = config.mongodb.uri;
-
-    if (!uri) {
-      const { user, password, host, port } = config.mongodb;
-      const auth = user && password ? `${user}:${password}@` : '';
-      uri = `mongodb://${auth}${host}:${port}/copy-polymarket`;
-    }
-    
-    await mongoose.connect(uri);
+    await mongoose.connect(config.mongodb.uri);
 
     // Keep collection indexes aligned with schema to avoid stale unique constraints.
     await UserPosition.syncIndexes();
