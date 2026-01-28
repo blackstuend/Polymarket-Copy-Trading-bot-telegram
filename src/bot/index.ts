@@ -62,13 +62,12 @@ function formatPositionLine(position: IMyPosition, index: number): string {
     : size * curPrice;
   const cashPnl = Number.isFinite(position.cashPnl) ? position.cashPnl : 0;
   const percentPnl = Number.isFinite(position.percentPnl) ? position.percentPnl : null;
-  const realizedPnl = Number.isFinite(position.realizedPnl) ? position.realizedPnl : 0;
+  const pnlEmoji = cashPnl >= 0 ? '🟢' : '🔴';
 
   return `${index}. ${escapeMarkdown(label)}${escapeMarkdown(outcome)} | ` +
     `size ${size.toFixed(2)} | buy ${avgPrice.toFixed(4)} | cur ${curPrice.toFixed(4)} | ` +
     `value ${formatUsd(currentValue)} | ` +
-    `uPnL ${formatSignedUsd(cashPnl)} (${formatPct(percentPnl)}) | ` +
-    `rPnL ${formatSignedUsd(realizedPnl)}`;
+    `${pnlEmoji} uPnL ${formatSignedUsd(cashPnl)} (${formatPct(percentPnl)})`;
 }
 
 function getPositionCostBasis(position: IMyPosition, size: number): number {
@@ -340,6 +339,7 @@ function setupCommands(bot: Telegraf): void {
         `*Mock Task* ${escapeMarkdown(task.id)}`,
         `ID: \`${escapeMarkdown(task.id)}\``,
         `Address: \`${escapeMarkdown(task.address)}\``,
+        `Profile: ${task.url}`,
       ];
 
       lines.push(
