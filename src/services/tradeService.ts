@@ -286,7 +286,7 @@ const simulateOrderExecution = async (
             const avgFillPrice = weightedPriceSum / totalTokens;
             const slippage = ((avgFillPrice - targetPrice) / targetPrice) * 100;
 
-            if (slippage > 5) {
+            if (Math.abs(slippage) > 5) {
                 const filledUsd = amount - remainingUsd;
                 return {
                     success: false,
