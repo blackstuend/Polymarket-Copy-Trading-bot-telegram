@@ -1,5 +1,6 @@
 import { fetchData } from '../utils/fetchData.js';
 import { checkClobConnection } from './polymarket.js';
+import { logger } from '../utils/logger.js';
 
 export async function performStartupChecks(): Promise<void> {
   const checks: Record<string, any> = {};
@@ -30,9 +31,9 @@ export async function performStartupChecks(): Promise<void> {
 
   for (const [key, value] of Object.entries(checks)) {
     if (value.status === 'ok') {
-      console.log(`✅ ${key} check passed`);
+      logger.info(`✅ ${key} check passed`);
     } else {
-      console.error(`❌ ${key} check failed: ${value.message}`);
+      logger.error(`❌ ${key} check failed: ${value.message}`);
     }
   }
 
@@ -41,3 +42,4 @@ export async function performStartupChecks(): Promise<void> {
     throw new Error(`Polymarket CLOB API check failed: ${checks.polymarketClobApi.message}`);
   }
 }
+

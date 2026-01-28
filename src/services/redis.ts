@@ -1,5 +1,6 @@
 import { createClient, RedisClientType } from 'redis';
 import { config } from '../config/index.js';
+import { logger } from '../utils/logger.js';
 
 let redisClient: RedisClientType | null = null;
 
@@ -13,11 +14,11 @@ export async function getRedisClient(): Promise<RedisClientType> {
   });
 
   redisClient.on('connect', () => {
-    console.log('✅ Redis connected');
+    logger.info('✅ Redis connected');
   });
 
   redisClient.on('error', (err: Error) => {
-    console.error('❌ Redis connection error:', err);
+    logger.error({ err }, '❌ Redis connection error');
   });
 
   await redisClient.connect();
@@ -28,6 +29,6 @@ export async function closeRedisConnection(): Promise<void> {
   if (redisClient && redisClient.isOpen) {
     await redisClient.quit();
     redisClient = null;
-    console.log('Redis connection closed');
+    logger.info('Redis connection closed');
   }
 }

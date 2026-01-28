@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import { sleep } from './sleep.js';
+import { logger } from './logger.js';
 
 export const isNetworkError = (error: unknown): boolean => {
     if (axios.isAxiosError(error)) {
@@ -36,7 +37,7 @@ export const fetchData = async (url: string, retries = 3, timeout = 10000) => {
 
             if (isNetworkError(error) && !isLastAttempt) {
                 const delay = retryDelay * Math.pow(2, attempt - 1); // Exponential backoff: 1s, 2s, 4s
-                console.warn(
+                logger.warn(
                     `⚠️  Network error (attempt ${attempt}/${retries}), retrying in ${delay / 1000}s...`
                 );
                 await sleep(delay);
@@ -45,9 +46,10 @@ export const fetchData = async (url: string, retries = 3, timeout = 10000) => {
 
             // If it's the last attempt or not a network error, throw
             if (isLastAttempt && isNetworkError(error)) {
-                console.error(
-                    `❌ Network timeout after ${retries} attempts -`,
-                    axios.isAxiosError(error) ? error.code : 'Unknown error'
+                const errorCode = axios.isAxiosError(error) ? error.code : undefined;
+                logger.error(
+                    { err: error, code: errorCode },
+                    `❌ Network timeout after ${retries} attempts`
                 );
             }
             throw error;

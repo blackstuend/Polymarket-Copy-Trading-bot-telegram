@@ -4,6 +4,7 @@ import { createClient } from 'redis';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { MyPosition } from '../models/MyPosition.js';
 import { UserActivity } from '../models/UserActivity.js';
+import { logger } from '../utils/logger.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
 
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const taskId = argv[0];
   if (!taskId || taskId === '-h' || taskId === '--help') {
-    console.error('Usage: tsx src/scripts/analyzeTaskLoss.ts <taskId> [--all] [--limit N]');
+    logger.error('Usage: tsx src/scripts/analyzeTaskLoss.ts <taskId> [--all] [--limit N]');
     process.exit(1);
   }
   let limit = 25;
@@ -46,12 +47,12 @@ async function main(): Promise<void> {
     if (arg === '--limit') {
       const next = argv[i + 1];
       if (!next) {
-        console.error('Missing value for --limit');
+        logger.error('Missing value for --limit');
         process.exit(1);
       }
       const parsed = Number(next);
       if (!Number.isFinite(parsed) || parsed <= 0) {
-        console.error(`Invalid limit: ${next}`);
+        logger.error(`Invalid limit: ${next}`);
         process.exit(1);
       }
       limit = Math.floor(parsed);
@@ -61,7 +62,7 @@ async function main(): Promise<void> {
     if (arg.startsWith('--limit=')) {
       const parsed = Number(arg.slice('--limit='.length));
       if (!Number.isFinite(parsed) || parsed <= 0) {
-        console.error(`Invalid limit: ${arg}`);
+        logger.error(`Invalid limit: ${arg}`);
         process.exit(1);
       }
       limit = Math.floor(parsed);
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
   const redisHost = process.env.REDIS_HOST;
   const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
   if (!redisHost) {
-    console.error('REDIS_HOST is not set in the environment.');
+    logger.error('REDIS_HOST is not set in the environment.');
     process.exit(1);
   }
 
@@ -80,14 +81,14 @@ async function main(): Promise<void> {
     socket: { host: redisHost, port: redisPort },
     password: process.env.REDIS_PASSWORD || undefined,
   });
-  redis.on('error', (err) => console.error('Redis error:', err));
+  redis.on('error', (err) => logger.error({ err }, 'Redis error'));
 
   await redis.connect();
   const taskStr = await redis.hGet(TASKS_KEY, taskId);
   await redis.quit();
 
   if (!taskStr) {
-    console.error(`Task not found in Redis: ${taskId}`);
+    logger.error(`Task not found in Redis: ${taskId}`);
     process.exit(1);
   }
 
@@ -101,18 +102,18 @@ async function main(): Promise<void> {
     createdAt: number;
   };
 
-  console.log('Task');
-  console.log(`  id: ${task.id}`);
-  console.log(`  type: ${task.type}`);
-  console.log(`  address: ${task.address}`);
-  console.log(`  createdAt: ${formatIso(task.createdAt)}`);
-  console.log(`  initialFinance: ${formatUsd(task.initialFinance)}`);
-  console.log(`  currentBalance: ${formatUsd(task.currentBalance)}`);
-  console.log(`  fixedAmount: ${formatUsd(task.fixedAmount)}`);
+  logger.info('Task');
+  logger.info(`  id: ${task.id}`);
+  logger.info(`  type: ${task.type}`);
+  logger.info(`  address: ${task.address}`);
+  logger.info(`  createdAt: ${formatIso(task.createdAt)}`);
+  logger.info(`  initialFinance: ${formatUsd(task.initialFinance)}`);
+  logger.info(`  currentBalance: ${formatUsd(task.currentBalance)}`);
+  logger.info(`  fixedAmount: ${formatUsd(task.fixedAmount)}`);
 
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri) {
-    console.error('MONGODB_URI is not set in the environment.');
+    logger.error('MONGODB_URI is not set in the environment.');
     process.exit(1);
   }
 
@@ -129,15 +130,15 @@ async function main(): Promise<void> {
     const earliestActivity = await UserActivity.findOne({ taskId }).sort({ timestamp: 1 }).lean();
     const latestActivity = await UserActivity.findOne({ taskId }).sort({ timestamp: -1 }).lean();
 
-    console.log('Activity');
-    console.log(`  beforeCreatedAt: ${beforeCount}`);
-    console.log(`  afterCreatedAt: ${afterCount}`);
-    console.log(`  pendingBotFalse: ${pendingCount}`);
+    logger.info('Activity');
+    logger.info(`  beforeCreatedAt: ${beforeCount}`);
+    logger.info(`  afterCreatedAt: ${afterCount}`);
+    logger.info(`  pendingBotFalse: ${pendingCount}`);
     if (earliestActivity?.timestamp) {
-      console.log(`  earliestTimestamp: ${new Date(earliestActivity.timestamp * 1000).toISOString().replace('T', ' ')}`);
+      logger.info(`  earliestTimestamp: ${new Date(earliestActivity.timestamp * 1000).toISOString().replace('T', ' ')}`);
     }
     if (latestActivity?.timestamp) {
-      console.log(`  latestTimestamp: ${new Date(latestActivity.timestamp * 1000).toISOString().replace('T', ' ')}`);
+      logger.info(`  latestTimestamp: ${new Date(latestActivity.timestamp * 1000).toISOString().replace('T', ' ')}`);
     }
 
     const tradeTotals = await mockTradeRecrod.aggregate<{
@@ -190,12 +191,12 @@ async function main(): Promise<void> {
     const trades = await tradeQuery.lean();
 
     if (trades.length === 0) {
-      console.log('Mock trades: none');
+      logger.info('Mock trades: none');
     } else {
       if (showAll) {
-        console.log('All mock trades (chronological)');
+        logger.info('All mock trades (chronological)');
       } else {
-        console.log(`First mock trades (chronological, limit ${limit})`);
+        logger.info(`First mock trades (chronological, limit ${limit})`);
       }
       let cumulative = 0;
       for (const trade of trades) {
@@ -205,7 +206,7 @@ async function main(): Promise<void> {
         cumulative += delta;
         const pct = task.initialFinance > 0 ? (cumulative / task.initialFinance) * 100 : null;
         const label = trade.title || trade.slug || trade.conditionId || 'unknown';
-        console.log(
+        logger.info(
           `  ${formatIso(trade.executedAt)} | ${side.padEnd(6)} | ${formatUsd(usdcAmount).padEnd(10)} | ` +
           `delta ${formatUsd(delta).padEnd(10)} | cum ${formatUsd(cumulative).padEnd(10)} | ` +
           `cumPct ${formatPct(pct)} | ${label}`
@@ -213,19 +214,19 @@ async function main(): Promise<void> {
       }
     }
 
-    console.log('Trade totals');
-    console.log(`  BUY: ${buyTotals.count} trades, ${formatUsd(buyTotals.totalUsd)}`);
-    console.log(`  SELL: ${sellTotals.count} trades, ${formatUsd(sellTotals.totalUsd)}`);
-    console.log(`  REDEEM: ${redeemTotals.count} trades, ${formatUsd(redeemTotals.totalUsd)}`);
+    logger.info('Trade totals');
+    logger.info(`  BUY: ${buyTotals.count} trades, ${formatUsd(buyTotals.totalUsd)}`);
+    logger.info(`  SELL: ${sellTotals.count} trades, ${formatUsd(sellTotals.totalUsd)}`);
+    logger.info(`  REDEEM: ${redeemTotals.count} trades, ${formatUsd(redeemTotals.totalUsd)}`);
     if (unknownTotals.count > 0) {
-      console.log(`  UNKNOWN: ${unknownTotals.count} trades, ${formatUsd(unknownTotals.totalUsd)}`);
+      logger.info(`  UNKNOWN: ${unknownTotals.count} trades, ${formatUsd(unknownTotals.totalUsd)}`);
     }
     if (otherTotals.count > 0) {
-      console.log(`  OTHER: ${otherTotals.count} trades, ${formatUsd(otherTotals.totalUsd)}`);
+      logger.info(`  OTHER: ${otherTotals.count} trades, ${formatUsd(otherTotals.totalUsd)}`);
     }
-    console.log(`  netCashFlow: ${formatSignedUsd(netCashFlow)}`);
-    console.log(`  expectedBalance: ${formatUsd(expectedBalance)}`);
-    console.log(`  balanceGap: ${formatSignedUsd(balanceGap)}`);
+    logger.info(`  netCashFlow: ${formatSignedUsd(netCashFlow)}`);
+    logger.info(`  expectedBalance: ${formatUsd(expectedBalance)}`);
+    logger.info(`  balanceGap: ${formatSignedUsd(balanceGap)}`);
 
     const positions = await MyPosition.find({ taskId }).lean();
     let totalPositionValue = 0;
@@ -250,17 +251,17 @@ async function main(): Promise<void> {
     const totalPnl = equity - (task.initialFinance || 0);
     const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
 
-    console.log('Equity');
-    console.log(`  totalPositionValue: ${formatUsd(totalPositionValue)}`);
-    console.log(`  totalCostBasis: ${formatUsd(totalCostBasis)}`);
-    console.log(`  equity: ${formatUsd(equity)}`);
-    console.log(`  totalPnl: ${formatUsd(totalPnl)} (${formatPct(pnlPct)})`);
+    logger.info('Equity');
+    logger.info(`  totalPositionValue: ${formatUsd(totalPositionValue)}`);
+    logger.info(`  totalCostBasis: ${formatUsd(totalCostBasis)}`);
+    logger.info(`  equity: ${formatUsd(equity)}`);
+    logger.info(`  totalPnl: ${formatUsd(totalPnl)} (${formatPct(pnlPct)})`);
   } finally {
     await mongoose.disconnect();
   }
 }
 
 main().catch((error) => {
-  console.error('Analyze failed:', error);
+  logger.error({ err: error }, 'Analyze failed');
   process.exit(1);
 });

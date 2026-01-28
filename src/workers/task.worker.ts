@@ -15,6 +15,7 @@ import {
 } from '../services/tradeService.js';
 import { UserActivity } from '../models/UserActivity.js';
 import { getClobClient } from '../services/polymarket.js';
+import { logger } from '../utils/logger.js';
 
 let worker: Worker<TaskJobData> | null = null;
 const taskRunCounts = new Map<string, number>();
@@ -23,7 +24,7 @@ const syncEveryRuns = 30;
 export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
   if (!worker) {
     // 1. Restore scheduled jobs for all running tasks
-    console.log('🔄 Restoring task schedules...');
+    logger.info('🔄 Restoring task schedules...');
     const runningTasks = await listTasks(); 
 
     let restoredCount = 0;
@@ -34,7 +35,7 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
         restoredCount++;
       }
     }
-    console.log(`✅ Restored ${restoredCount} running task schedules.`);
+    logger.info(`✅ Restored ${restoredCount} running task schedules.`);
 
     // 2. Create worker to process the task jobs
     worker = createWorker<TaskJobData>(QUEUE_NAMES.TASK, processJob);
@@ -75,10 +76,10 @@ async function syncPositions(task: CopyTask): Promise<void> {
     }
 
     if (closedCount > 0) {
-      console.log(`[Task ${task.id}] Position sync closed ${closedCount} position(s)`);
+      logger.info(`[Task ${task.id}] Position sync closed ${closedCount} position(s)`);
     }
   } catch (error) {
-    console.error(`[Task ${task.id}] Error during position sync:`, error);
+    logger.error({ err: error }, `[Task ${task.id}] Error during position sync`);
   }
 }
 
@@ -86,7 +87,7 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
   const { taskId } = job.data;
 
   if (!taskId) {
-    console.error(`❌ Job ${job.id} has no taskId! Data:`, job.data);
+    logger.error({ jobData: job.data }, `❌ Job ${job.id} has no taskId!`);
     return;
   }
 
@@ -95,12 +96,12 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
       const task = await getTask(taskId);
 
       if (!task) {
-        console.warn(`⚠️ Task ${taskId} not found in Redis (maybe removed?)`);
+        logger.warn(`⚠️ Task ${taskId} not found in Redis (maybe removed?)`);
         return;
       }
 
       if (task.status !== 'running') {
-        console.log(`ℹ️ Task ${taskId} is ${task.status}, skipping execution`);
+        logger.info(`ℹ️ Task ${taskId} is ${task.status}, skipping execution`);
         return;
       }
 
@@ -114,13 +115,13 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
       await executeTask(task);
 
     } catch (error) {
-      console.error(`❌ Error processing task ${taskId}:`, error);
+      logger.error({ err: error }, `❌ Error processing task ${taskId}`);
       throw error; // Re-throw to let BullMQ handle retries
     }
   });
 
   if (!ran) {
-    console.log(`[Task ${taskId}] Previous run still active, skipping this interval`);
+    logger.info(`[Task ${taskId}] Previous run still active, skipping this interval`);
   }
 }
 
@@ -136,7 +137,7 @@ async function executeTask(task: CopyTask): Promise<void> {
       return;
     }
 
-    console.log(`[Task ${task.id}] Found ${trades.length} pending trade(s)`);
+    logger.info(`[Task ${task.id}] Found ${trades.length} pending trade(s)`);
 
     // Get my positions (from DB for mock, from API for live)
     let myPositions = await getMyPositions(task);
@@ -157,17 +158,17 @@ async function executeTask(task: CopyTask): Promise<void> {
       const tradeAction = trade.side || trade.type || 'UNKNOWN';
       const tradeLabel = trade.slug || trade.conditionId || 'unknown';
 
-      console.log(`[Task ${task.id}] Processing ${tradeAction} trade: ${tradeLabel}`);
+      logger.info(`[Task ${task.id}] Processing ${tradeAction} trade: ${tradeLabel}`);
       if (tradeAction === 'BUY' || tradeAction === 'SELL') {
-        console.log(`  - Trade size: ${trade.size} tokens, USDC: $${trade.usdcSize.toFixed(2)}, Price: $${trade.price.toFixed(4)}`);
+        logger.info(`  - Trade size: ${trade.size} tokens, USDC: $${trade.usdcSize.toFixed(2)}, Price: $${trade.price.toFixed(4)}`);
       } else if (tradeAction === 'REDEEM') {
-        console.log(`  - Redeem event detected`);
+        logger.info(`  - Redeem event detected`);
       }
 
       if (tradeAction === 'BUY') {
         // BUY logic: Skip if already have position
         if (myPosition && myPosition.size > 0) {
-          console.log(`  - Skipping: Already have position (${myPosition.size.toFixed(2)} tokens)`);
+          logger.info(`  - Skipping: Already have position (${myPosition.size.toFixed(2)} tokens)`);
           await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 888, bot: true });
           continue;
         }
@@ -176,12 +177,12 @@ async function executeTask(task: CopyTask): Promise<void> {
         if (spent > 0) {
           task.currentBalance -= spent;
           await updateTask(task);
-          console.log(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+          logger.info(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
         }
       } else if (tradeAction === 'SELL') {
         // SELL logic: Skip if no position to sell
         if (!myPosition || myPosition.size <= 0) {
-          console.log(`  - Skipping: No position to sell`);
+          logger.info(`  - Skipping: No position to sell`);
           await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 888, bot: true });
           continue;
         }
@@ -190,22 +191,22 @@ async function executeTask(task: CopyTask): Promise<void> {
         if (received > 0) {
           task.currentBalance += received;
           await updateTask(task);
-          console.log(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+          logger.info(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
         }
       } else if (tradeAction === 'REDEEM') {
         const redeemed = await handleRedeemTrade(trade, task, myPosition);
         if (redeemed > 0) {
           task.currentBalance += redeemed;
           await updateTask(task);
-          console.log(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+          logger.info(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
         }
       } else {
-        console.log(`  - Unknown trade action: side=${trade.side || '""'} type=${trade.type || '""'}`);
+        logger.info(`  - Unknown trade action: side=${trade.side || '""'} type=${trade.type || '""'}`);
         await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 888, bot: true });
       }
     }
   } catch (error) {
-    console.error(`Error getting pending trades for task ${task.id}:`, error);
+    logger.error({ err: error }, `Error getting pending trades for task ${task.id}`);
   }
 }
 
@@ -213,6 +214,6 @@ export async function stopTaskWorker(): Promise<void> {
   if (worker) {
     await worker.close();
     worker = null;
-    console.log('Task worker stopped');
+    logger.info('Task worker stopped');
   }
 }

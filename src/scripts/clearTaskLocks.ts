@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { getRedisClient, closeRedisConnection } from '../services/redis.js';
+import { logger } from '../utils/logger.js';
 
 const LOCK_PREFIX = 'copy-polymarket:task-lock:';
 const SCAN_COUNT = 200;
@@ -21,17 +22,17 @@ async function clearTaskLocks(): Promise<void> {
     if (keys.length > 0) {
       const deleted = await redis.del(keys);
       totalDeleted += deleted;
-      console.log(`Deleted ${deleted} lock(s) in this batch`);
+      logger.info(`Deleted ${deleted} lock(s) in this batch`);
     }
 
     cursor = nextCursor;
   } while (cursor !== '0');
 
-  console.log(`Done. Deleted ${totalDeleted} lock(s) total.`);
+  logger.info(`Done. Deleted ${totalDeleted} lock(s) total.`);
   await closeRedisConnection();
 }
 
 clearTaskLocks().catch((error) => {
-  console.error('Failed to clear task locks:', error);
+  logger.error({ err: error }, 'Failed to clear task locks');
   process.exitCode = 1;
 });

@@ -8,6 +8,7 @@ import { ClobClient } from '@polymarket/clob-client';
 import { calculateOrderSize } from '../config/copyStrategy.js';
 import { ethers } from 'ethers';
 import type { Types } from 'mongoose';
+import { logger } from '../utils/logger.js';
 import {
     CTF_ABI,
     CTF_CONTRACT_ADDRESS,
@@ -62,7 +63,7 @@ const persistMockTradeRecrod = async (
             executedAt: data.executedAt ?? Date.now(),
         });
     } catch (error) {
-        console.error(`[MOCK] Failed to persist mock trade record: ${error}`);
+        logger.error(`[MOCK] Failed to persist mock trade record: ${error}`);
     }
 };
 
@@ -127,10 +128,10 @@ export const syncTradeData = async (task: CopyTask) => {
             });
 
             await newActivity.save();
-            console.log(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}: ${activity.transactionHash}${isDuplicate ? ' (duplicate, skipped)' : ''}`);
+            logger.info(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}: ${activity.transactionHash}${isDuplicate ? ' (duplicate, skipped)' : ''}`);
         }
     } catch (error) {
-        console.error(
+        logger.error(
             `Error fetching data for ${address.slice(0, 6)}...${address.slice(-4)}: ${error}`
         );
         throw error;
@@ -211,7 +212,7 @@ export const getMyPositions = async (task: CopyTask): Promise<PositionData[]> =>
             return [];
         }
     } catch (error) {
-        console.error(`Error getting positions for task ${task.id}: ${error}`);
+        logger.error(`Error getting positions for task ${task.id}: ${error}`);
         throw error;
     }
 };
@@ -402,33 +403,33 @@ export const handleBuyTrade = async (
     task: CopyTask,
     myPosition: PositionData | undefined
 ): Promise<number> => {
-    console.log(`[MOCK] Executing BUY strategy for ${trade.slug}...`);
+    logger.info(`[MOCK] Executing BUY strategy for ${trade.slug}...`);
     const taskWallet = task.wallet;
 
     // Skip if price is too high
     if (trade.price > 0.99) {
-        console.log(`[MOCK] Skip trade ${trade.slug} - price too high (${trade.price})`);
+        logger.info(`[MOCK] Skip trade ${trade.slug} - price too high (${trade.price})`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
 
     // Skip if already have position (for BUY)
     if (myPosition && myPosition.size > 0) {
-        console.log(`[MOCK] Skip trade ${trade.slug} - already have position`);
+        logger.info(`[MOCK] Skip trade ${trade.slug} - already have position`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
 
-    console.log(`[MOCK] Current balance: $${task.currentBalance.toFixed(2)}`);
-    console.log(`[MOCK] Trader bought: $${trade.usdcSize.toFixed(2)}`);
+    logger.info(`[MOCK] Current balance: $${task.currentBalance.toFixed(2)}`);
+    logger.info(`[MOCK] Trader bought: $${trade.usdcSize.toFixed(2)}`);
 
     // Calculate order size (fixed amount strategy)
     const orderCalc = calculateOrderSize(task.fixedAmount, task.currentBalance);
 
-    console.log(`[MOCK] ${orderCalc.reasoning}`);
+    logger.info(`[MOCK] ${orderCalc.reasoning}`);
 
     if (orderCalc.finalAmount === 0) {
-        console.log(`[MOCK] Cannot execute: ${orderCalc.reasoning}`);
+        logger.info(`[MOCK] Cannot execute: ${orderCalc.reasoning}`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
@@ -443,7 +444,7 @@ export const handleBuyTrade = async (
     );
 
     if (!result.success) {
-        console.log(
+        logger.info(
             `[MOCK] Order simulation failed: ${result.reason} ` +
             `(copy price: $${trade.price.toFixed(4)}, amount: $${orderCalc.finalAmount.toFixed(2)})`
         );
@@ -451,7 +452,7 @@ export const handleBuyTrade = async (
         return 0;
     }
 
-    console.log(
+    logger.info(
         `[MOCK] Bought $${result.usdcAmount.toFixed(2)} ` +
         `(copy price: $${trade.price.toFixed(4)}, fill: $${result.fillPrice.toFixed(4)}) ` +
         `(${result.fillSize.toFixed(2)} tokens, slippage: ${result.slippage.toFixed(2)}%)`
@@ -530,12 +531,12 @@ export const handleSellTrade = async (
     myPosition: PositionData | undefined,
     copyTraderPosition: PositionData | undefined
 ): Promise<number> => {
-    console.log(`[MOCK] Executing SELL strategy for ${trade.slug}...`);
+    logger.info(`[MOCK] Executing SELL strategy for ${trade.slug}...`);
     const taskWallet = task.wallet;
 
     // Skip if no position to sell
     if (!myPosition || myPosition.size <= 0) {
-        console.log(`[MOCK] No position to sell for ${trade.slug}`);
+        logger.info(`[MOCK] No position to sell for ${trade.slug}`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
@@ -547,17 +548,17 @@ export const handleSellTrade = async (
         // Calculate the ratio of how much the copy trader sold
         const copyTraderSellRatio = trade.size / (trade.size + copyTraderPosition.size);
         sellAmount = myPosition.size * copyTraderSellRatio;
-        console.log(`[MOCK] Copy trader sold ${(copyTraderSellRatio * 100).toFixed(2)}% of position`);
-        console.log(`[MOCK] My position: ${myPosition.size.toFixed(2)} tokens, selling: ${sellAmount.toFixed(2)} tokens`);
+        logger.info(`[MOCK] Copy trader sold ${(copyTraderSellRatio * 100).toFixed(2)}% of position`);
+        logger.info(`[MOCK] My position: ${myPosition.size.toFixed(2)} tokens, selling: ${sellAmount.toFixed(2)} tokens`);
     } else {
         // Copy trader sold entire position, sell all
         sellAmount = myPosition.size;
-        console.log(`[MOCK] Copy trader closed position, selling all: ${sellAmount.toFixed(2)} tokens`);
+        logger.info(`[MOCK] Copy trader closed position, selling all: ${sellAmount.toFixed(2)} tokens`);
     }
 
     // Check minimum order size
     if (sellAmount < MIN_ORDER_SIZE_TOKENS) {
-        console.log(`[MOCK] Sell amount ${sellAmount.toFixed(2)} tokens below minimum`);
+        logger.info(`[MOCK] Sell amount ${sellAmount.toFixed(2)} tokens below minimum`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
@@ -572,7 +573,7 @@ export const handleSellTrade = async (
     );
 
     if (!result.success) {
-        console.log(
+        logger.info(
             `[MOCK] Order simulation failed: ${result.reason} ` +
             `(copy price: $${trade.price.toFixed(4)}, amount: ${sellAmount.toFixed(2)} tokens)`
         );
@@ -580,7 +581,7 @@ export const handleSellTrade = async (
         return 0;
     }
 
-    console.log(
+    logger.info(
         `[MOCK] Sold ${result.fillSize.toFixed(2)} tokens ` +
         `(copy price: $${trade.price.toFixed(4)}, fill: $${result.fillPrice.toFixed(4)}) ` +
         `($${result.usdcAmount.toFixed(2)}, slippage: ${result.slippage.toFixed(2)}%)`
@@ -597,7 +598,7 @@ export const handleSellTrade = async (
     if (newSize <= 0.01) {
         // Close position entirely
         await MyPosition.deleteOne({ taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet });
-        console.log(`[MOCK] Position closed`);
+        logger.info(`[MOCK] Position closed`);
     } else {
         // Partial close
         const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
@@ -617,7 +618,7 @@ export const handleSellTrade = async (
                 },
             }
         );
-        console.log(`[MOCK] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
+        logger.info(`[MOCK] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
     }
 
     await persistMockTradeRecrod({
@@ -651,7 +652,7 @@ export const handleSellTrade = async (
         { bot: true, botExcutedTime: 888 }
     );
 
-    console.log(`[MOCK] Realized PnL: $${realizedPnl.toFixed(2)}`);
+    logger.info(`[MOCK] Realized PnL: $${realizedPnl.toFixed(2)}`);
 
     // Return usdc amount received for balance update
     return result.usdcAmount;
@@ -667,10 +668,10 @@ export const handleRedeemTrade = async (
     myPosition: PositionData | undefined
 ): Promise<number> => {
     const positionLabel = trade.slug || trade.conditionId || 'unknown';
-    console.log(`[REDEEM] Handling redeem event for ${positionLabel}...`);
+    logger.info(`[REDEEM] Handling redeem event for ${positionLabel}...`);
 
     if (!myPosition || myPosition.size <= 0) {
-        console.log(`[REDEEM] No position to redeem for ${positionLabel}`);
+        logger.info(`[REDEEM] No position to redeem for ${positionLabel}`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
@@ -711,7 +712,7 @@ export const forcedClosePosition = async (
         .filter((bid) => bid.price > 0 && bid.size > 0);
 
     if (validBids.length === 0) {
-        console.log(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
+        logger.info(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
         const result = await redeemPosition(task, myPosition, liveConfig);
         return result.value;
     }
@@ -724,11 +725,11 @@ export const forcedClosePosition = async (
     const targetPrice = bestBidPrice;
 
     if (targetPrice <= 0) {
-        console.log(`[FORCED_CLOSE] Missing current price for ${myPosition.slug}, skipping close`);
+        logger.warn(`[FORCED_CLOSE] Missing current price for ${myPosition.slug}, skipping close`);
         return 0;
     }
 
-    console.log(`[FORCED_CLOSE] Closing position for ${myPosition.slug}...`);
+    logger.info(`[FORCED_CLOSE] Closing position for ${myPosition.slug}...`);
 
     const result = await simulateOrderExecution(
         clobClient,
@@ -741,12 +742,12 @@ export const forcedClosePosition = async (
 
     if (!result.success) {
         if (result.reason === 'No bids available in order book') {
-            console.log(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
+            logger.info(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
             const redeemResult = await redeemPosition(task, myPosition, liveConfig);
             return redeemResult.value;
         }
 
-        console.log(`[FORCED_CLOSE] Order simulation failed: ${result.reason}`);
+        logger.warn(`[FORCED_CLOSE] Order simulation failed: ${result.reason}`);
         return 0;
     }
 
@@ -764,7 +765,7 @@ export const forcedClosePosition = async (
             conditionId: myPosition.conditionId,
             proxyWallet: taskWallet,
         });
-        console.log(`[FORCED_CLOSE] Position closed`);
+        logger.info(`[FORCED_CLOSE] Position closed`);
     } else {
         const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
         await MyPosition.updateOne(
@@ -783,7 +784,7 @@ export const forcedClosePosition = async (
                 },
             }
         );
-        console.log(`[FORCED_CLOSE] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
+        logger.info(`[FORCED_CLOSE] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
     }
 
     if (task.type === 'mock') {
@@ -810,7 +811,7 @@ export const forcedClosePosition = async (
         });
     }
 
-    console.log(`[FORCED_CLOSE] Realized PnL: $${realizedPnl.toFixed(2)}`);
+    logger.info(`[FORCED_CLOSE] Realized PnL: $${realizedPnl.toFixed(2)}`);
 
     return result.usdcAmount;
 };
@@ -836,14 +837,14 @@ export const redeemPosition = async (
 
     const rpcUrl = task.rpcUrl || liveConfig?.rpcUrl;
     if (!rpcUrl) {
-        console.log(`[REDEEM] Missing rpcUrl for on-chain payout check`);
+        logger.warn(`[REDEEM] Missing rpcUrl for on-chain payout check`);
         return { success: false, value: 0, realizedPnl: 0, error: 'Missing rpcUrl' };
     }
 
     const payoutInfo = await getOutcomePayoutRatio(rpcUrl, position.conditionId, position.outcomeIndex);
     if (!payoutInfo.settled) {
         const reason = payoutInfo.error || 'Condition not settled';
-        console.log(`[REDEEM] On-chain payout unavailable for ${positionLabel}: ${reason}`);
+        logger.warn(`[REDEEM] On-chain payout unavailable for ${positionLabel}: ${reason}`);
         return { success: false, value: 0, realizedPnl: 0, error: reason };
     }
 
@@ -882,13 +883,13 @@ export const redeemPosition = async (
             proxyWallet: taskWallet,
         });
 
-        console.log(`[REDEEM] Redeemed position (mock), payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
+        logger.info(`[REDEEM] Redeemed position (mock), payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
         return { success: true, value: redeemValue, realizedPnl };
     }
 
     // Live mode: call redeem contract
     if (!liveConfig) {
-        console.log(`[REDEEM] Live mode requires privateKey and rpcUrl for redemption`);
+        logger.warn(`[REDEEM] Live mode requires privateKey and rpcUrl for redemption`);
         return { success: false, value: 0, realizedPnl: 0, error: 'Missing liveConfig for live mode' };
     }
 
@@ -901,8 +902,8 @@ export const redeemPosition = async (
         const parentCollectionId = ethers.ZeroHash;
         const indexSets = [1, 2];
 
-        console.log(`[REDEEM] Attempting redemption for ${position.title || position.slug}...`);
-        console.log(`[REDEEM] Condition ID: ${conditionIdBytes32}`);
+        logger.info(`[REDEEM] Attempting redemption for ${position.title || position.slug}...`);
+        logger.info(`[REDEEM] Condition ID: ${conditionIdBytes32}`);
 
         const feeData = await provider.getFeeData();
         const gasPrice = feeData.gasPrice || feeData.maxFeePerGas;
@@ -924,7 +925,7 @@ export const redeemPosition = async (
             }
         );
 
-        console.log(`[REDEEM] Transaction submitted: ${tx.hash}`);
+        logger.info(`[REDEEM] Transaction submitted: ${tx.hash}`);
 
         const receipt = await tx.wait();
 
@@ -936,15 +937,15 @@ export const redeemPosition = async (
                 proxyWallet: taskWallet,
             });
 
-            console.log(`[REDEEM] Redemption successful! Gas used: ${receipt.gasUsed.toString()}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
+            logger.info(`[REDEEM] Redemption successful! Gas used: ${receipt.gasUsed.toString()}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
             return { success: true, value: redeemValue, realizedPnl };
         } else {
-            console.log(`[REDEEM] Transaction failed`);
+            logger.error(`[REDEEM] Transaction failed`);
             return { success: false, value: 0, realizedPnl: 0, error: 'Transaction reverted' };
         }
     } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.log(`[REDEEM] Redemption failed: ${errorMessage}`);
+        logger.error(`[REDEEM] Redemption failed: ${errorMessage}`);
         return { success: false, value: 0, realizedPnl: 0, error: errorMessage };
     }
 };
@@ -963,7 +964,7 @@ export const getCopyTraderPositions = async (address: string): Promise<PositionD
 
         return [];
     } catch (error) {
-        console.error(`Error getting copy trader positions: ${error}`);
+        logger.error(`Error getting copy trader positions: ${error}`);
         return [];
     }
 }; 

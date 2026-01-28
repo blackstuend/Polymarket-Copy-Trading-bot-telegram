@@ -1,6 +1,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { config } from '../config/index.js';
+import { logger } from '../utils/logger.js';
 
 // BullMQ requires ioredis, create dedicated connection
 function createBullMQConnection(): Redis {
@@ -39,7 +40,7 @@ export function createQueue<T>(name: string): Queue<T> {
     },
   });
 
-  console.log(`📋 Queue "${name}" created`);
+  logger.info(`📋 Queue "${name}" created`);
   return queue;
 }
 
@@ -56,14 +57,14 @@ export function createWorker<T>(
   });
 
   worker.on('completed', (job) => {
-    // console.log(`✅ Job ${job.id} completed`);
+    // logger.info(`✅ Job ${job.id} completed`);
   });
 
   worker.on('failed', (job, err) => {
-    console.error(`❌ Job ${job?.id} failed:`, err.message);
+    logger.error({ err }, `❌ Job ${job?.id} failed`);
   });
 
-  console.log(`👷 Worker for "${name}" started`);
+  logger.info(`👷 Worker for "${name}" started`);
   return worker;
 }
 
@@ -96,7 +97,7 @@ export async function scheduleTaskJob(taskId: string, intervalMs: number = 5000)
     }
   );
 
-  console.log(`⏰ Scheduled job for task ${taskId} (every ${intervalMs}ms)`);
+  logger.info(`⏰ Scheduled job for task ${taskId} (every ${intervalMs}ms)`);
 }
 
 // Helper to clear ALL repeatable jobs (useful for cleanup/debugging)
@@ -132,9 +133,9 @@ export async function removeTaskJob(taskId: string, intervalMs: number = 5000): 
     try {
       await job.remove();
     } catch (error) {
-      console.warn(`⚠️ Failed to remove queued job ${job.id} for task ${taskId}:`, error);
+      logger.warn({ err: error }, `⚠️ Failed to remove queued job ${job.id} for task ${taskId}`);
     }
   }
 
-  console.log(`🧹 Removed scheduled job and ${matchingJobs.length} queued job(s) for task ${taskId}`);
+  logger.info(`🧹 Removed scheduled job and ${matchingJobs.length} queued job(s) for task ${taskId}`);
 }

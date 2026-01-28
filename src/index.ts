@@ -6,15 +6,16 @@ import { startTaskWorker, stopTaskWorker } from './workers/task.worker.js';
 import { clearAllRepeatableJobs } from './services/queue.js';
 import { performStartupChecks } from './services/healthCheck.js';
 import { initClobClient } from './services/polymarket.js';
+import { logger } from './utils/logger.js';
 
 async function main(): Promise<void> {
-  console.log('🚀 Starting application...');
+  logger.info('🚀 Starting application...');
 
   // Validate configuration
   validateConfig();
   
-  console.log('📡 Connecting to Redis...');
-  console.log('📡 Connecting to MongoDB...');
+  logger.info('📡 Connecting to Redis...');
+  logger.info('📡 Connecting to MongoDB...');
 
   // Initialize CLOB client early (used by workers)
   initClobClient();
@@ -43,26 +44,26 @@ async function main(): Promise<void> {
 
   // Start the bot
   await bot.launch();
-  console.log('🤖 Bot is running!');
+  logger.info('🤖 Bot is running!');
 }
 
 async function shutdown(signal: string): Promise<void> {
-  console.log(`\n${signal} received. Shutting down gracefully...`);
+  logger.info(`\n${signal} received. Shutting down gracefully...`);
 
   try {
     await stopBot();
     await stopTaskWorker();
     await closeRedisConnection();
     await closeMongoDBConnection();
-    console.log('👋 Goodbye!');
+    logger.info('👋 Goodbye!');
     process.exit(0);
   } catch (error) {
-    console.error('Error during shutdown:', error);
+    logger.error({ err: error }, 'Error during shutdown');
     process.exit(1);
   }
 }
 
 main().catch((error) => {
-  console.error('❌ Fatal error:', error);
+  logger.error({ err: error }, '❌ Fatal error');
   process.exit(1);
 });

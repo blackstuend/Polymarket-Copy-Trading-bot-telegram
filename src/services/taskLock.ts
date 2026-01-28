@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getRedisClient } from './redis.js';
+import { logger } from '../utils/logger.js';
 
 const TASK_LOCK_PREFIX = 'copy-polymarket:task-lock:';
 const TASK_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -40,7 +41,7 @@ export async function withTaskLock(taskId: string, fn: () => Promise<void>): Pro
     try {
       await releaseTaskLock(taskId, token);
     } catch (error) {
-      console.error(`❌ Error releasing lock for task ${taskId}:`, error);
+      logger.error({ err: error }, `❌ Error releasing lock for task ${taskId}`);
     }
   }
 

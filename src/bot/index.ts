@@ -7,6 +7,7 @@ import { CopyTask } from '../types/task.js';
 import { getBidPriceLevels } from '../utils/orderBook.js';
 import type { IMyPosition } from '../models/MyPosition.js';
 import type { IMockTradeRecrod } from '../models/mockTradeRecrod.js';
+import { logger } from '../utils/logger.js';
 
 let bot: Telegraf | null = null;
 
@@ -94,7 +95,7 @@ async function getOrderBookPriceMap(positions: IMyPosition[]): Promise<Map<strin
         const bestBid = levels[0]?.price;
         return [asset, bestBid] as const;
       } catch (error) {
-        console.error(`[list_mock] Failed to fetch order book for ${asset}:`, error);
+        logger.error({ err: error }, `[list_mock] Failed to fetch order book for ${asset}`);
         return [asset, undefined] as const;
       }
     })
@@ -183,7 +184,7 @@ export function createBot(): Telegraf {
 
     // Global error handler
     bot.catch((err, ctx) => {
-      console.error(`❌ Telegram Error for ${ctx.updateType}:`, err);
+      logger.error({ err }, `❌ Telegram Error for ${ctx.updateType}`);
     });
   }
   return bot;
@@ -195,7 +196,7 @@ function setupMiddleware(bot: Telegraf): void {
     const start = Date.now();
     await next();
     const ms = Date.now() - start;
-    console.log(`📨 Response time: ${ms}ms`);
+    logger.info(`📨 Response time: ${ms}ms`);
   });
 }
 
@@ -437,6 +438,6 @@ export async function stopBot(): Promise<void> {
   if (bot) {
     bot.stop('SIGTERM');
     bot = null;
-    console.log('Bot stopped');
+    logger.info('Bot stopped');
   }
 }

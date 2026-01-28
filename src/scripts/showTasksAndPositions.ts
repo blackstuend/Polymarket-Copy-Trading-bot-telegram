@@ -2,6 +2,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import { createClient } from 'redis';
 import { MyPosition } from '../models/MyPosition.js';
+import { logger } from '../utils/logger.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
 
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
   const redisHost = process.env.REDIS_HOST;
   const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
   if (!redisHost) {
-    console.error('REDIS_HOST is not set in the environment.');
+    logger.error('REDIS_HOST is not set in the environment.');
     process.exit(1);
   }
 
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
     socket: { host: redisHost, port: redisPort },
     password: process.env.REDIS_PASSWORD || undefined,
   });
-  redis.on('error', (err) => console.error('Redis error:', err));
+  redis.on('error', (err) => logger.error({ err }, 'Redis error'));
 
   await redis.connect();
   const tasksMap = await redis.hGetAll(TASKS_KEY);
@@ -75,32 +76,32 @@ async function main(): Promise<void> {
     : allTasks;
 
   if (tasks.length === 0) {
-    console.log('No tasks found.');
+    logger.info('No tasks found.');
     return;
   }
 
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri) {
-    console.error('MONGODB_URI is not set in the environment.');
+    logger.error('MONGODB_URI is not set in the environment.');
     process.exit(1);
   }
 
   await mongoose.connect(mongoUri);
 
   try {
-    console.log(`Tasks: ${tasks.length}`);
+    logger.info(`Tasks: ${tasks.length}`);
 
     const sortedTasks = [...tasks].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
     for (const task of sortedTasks) {
       const safeTask = sanitizeTask(task);
-      console.log('');
-      console.log(`Task ${safeTask.id}`);
-      console.log(JSON.stringify(safeTask, null, 2));
+      logger.info('');
+      logger.info(`Task ${safeTask.id}`);
+      logger.info(JSON.stringify(safeTask, null, 2));
 
       const positions = await MyPosition.find({ taskId: task.id }).lean();
       if (positions.length === 0) {
-        console.log('Positions: none');
+        logger.info('Positions: none');
         continue;
       }
 
@@ -140,20 +141,20 @@ async function main(): Promise<void> {
         );
       }
 
-      console.log(`Positions: ${openPositions}`);
-      console.log(`  totalPositionValue: ${formatUsd(totalPositionValue)}`);
-      console.log(`  totalCostBasis: ${formatUsd(totalCostBasis)}`);
-      console.log(`  unrealizedPnl: ${formatUsd(totalPositionValue - totalCostBasis)}`);
-      console.log('Position details:');
+      logger.info(`Positions: ${openPositions}`);
+      logger.info(`  totalPositionValue: ${formatUsd(totalPositionValue)}`);
+      logger.info(`  totalCostBasis: ${formatUsd(totalCostBasis)}`);
+      logger.info(`  unrealizedPnl: ${formatUsd(totalPositionValue - totalCostBasis)}`);
+      logger.info('Position details:');
       for (const line of positionLines) {
-        console.log(`  - ${line}`);
+        logger.info(`  - ${line}`);
       }
 
       const equity = (task.currentBalance || 0) + totalPositionValue;
       const totalPnl = equity - (task.initialFinance || 0);
       const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
-      console.log(`Equity: ${formatUsd(equity)} | PnL: ${formatUsd(totalPnl)} (${formatPct(pnlPct)})`);
-      console.log(`CreatedAt: ${formatIso(task.createdAt)}`);
+      logger.info(`Equity: ${formatUsd(equity)} | PnL: ${formatUsd(totalPnl)} (${formatPct(pnlPct)})`);
+      logger.info(`CreatedAt: ${formatIso(task.createdAt)}`);
     }
   } finally {
     await mongoose.disconnect();
@@ -161,6 +162,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error('Show tasks failed:', error);
+  logger.error({ err: error }, 'Show tasks failed');
   process.exit(1);
 });

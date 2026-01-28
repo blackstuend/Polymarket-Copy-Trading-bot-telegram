@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { config } from '../config/index.js';
 import { UserPosition } from '../models/UserPosition.js';
+import { logger } from '../utils/logger.js';
 
 export async function connectToMongoDB(): Promise<void> {
   try {
@@ -10,15 +11,15 @@ export async function connectToMongoDB(): Promise<void> {
     await UserPosition.syncIndexes();
     
     mongoose.connection.on('error', (error) => {
-      console.error('❌ MongoDB connection error:', error);
+      logger.error({ err: error }, '❌ MongoDB connection error');
     });
 
     mongoose.connection.on('disconnected', () => {
-      console.warn('⚠️ MongoDB disconnected');
+      logger.warn('⚠️ MongoDB disconnected');
     });
 
   } catch (error) {
-    console.error('❌ Error connecting to MongoDB:', error);
+    logger.error({ err: error }, '❌ Error connecting to MongoDB');
     throw error;
   }
 }
@@ -26,8 +27,8 @@ export async function connectToMongoDB(): Promise<void> {
 export async function closeMongoDBConnection(): Promise<void> {
   try {
     await mongoose.connection.close();
-    console.log('📦 MongoDB connection closed');
+    logger.info('📦 MongoDB connection closed');
   } catch (error) {
-    console.error('❌ Error closing MongoDB connection:', error);
+    logger.error({ err: error }, '❌ Error closing MongoDB connection');
   }
 }

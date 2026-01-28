@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { logger } from '../utils/logger.js';
 
 const getRedisConfig = () => {
   const url = process.env.REDIS_URL;
@@ -12,7 +13,7 @@ const getRedisConfig = () => {
         password: parsed.password || undefined,
       };
     } catch (e) {
-      console.error('⚠️ Invalid REDIS_URL, falling back to env vars');
+      logger.error('⚠️ Invalid REDIS_URL, falling back to env vars');
     }
   }
   return {
@@ -43,7 +44,7 @@ export const config = {
 // Validate required environment variables
 export function validateConfig(): void {
   if (!config.telegram.botToken) {
-    console.warn('⚠️ TELEGRAM_BOT_TOKEN is not set');
+    logger.warn('⚠️ TELEGRAM_BOT_TOKEN is not set');
   }
   
   if (!config.mongodb.uri) {
@@ -55,6 +56,7 @@ export function validateConfig(): void {
   }
 
   if (!config.polymarket.rpcUrl) {
-    console.warn('⚠️ RPC_URL is not set');
+    logger.warn('⚠️ RPC_URL is not set');
   }
 }
+
