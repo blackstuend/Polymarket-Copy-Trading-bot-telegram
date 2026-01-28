@@ -6,6 +6,7 @@ import { CopyTask } from '../types/task.js';
 import { PositionData } from '../types/position.js';
 import { ClobClient } from '@polymarket/clob-client';
 import { calculateOrderSize } from '../config/copyStrategy.js';
+import { config } from '../config/index.js';
 import { ethers } from 'ethers';
 import type { Types } from 'mongoose';
 import { logger } from '../utils/logger.js';
@@ -676,8 +677,8 @@ export const handleRedeemTrade = async (
         return 0;
     }
 
-    const liveConfig = task.type === 'live' && task.privateKey && task.rpcUrl
-        ? { privateKey: task.privateKey, rpcUrl: task.rpcUrl }
+    const liveConfig = task.type === 'live' && task.privateKey && config.polymarket.rpcUrl
+        ? { privateKey: task.privateKey, rpcUrl: config.polymarket.rpcUrl }
         : undefined;
 
     const result = await redeemPosition(task, myPosition, liveConfig);
@@ -835,10 +836,10 @@ export const redeemPosition = async (
         return { success: false, value: 0, realizedPnl: 0, error: 'No position to redeem' };
     }
 
-    const rpcUrl = task.rpcUrl || liveConfig?.rpcUrl;
+    const rpcUrl = config.polymarket.rpcUrl;
     if (!rpcUrl) {
-        logger.warn(`[REDEEM] Missing rpcUrl for on-chain payout check`);
-        return { success: false, value: 0, realizedPnl: 0, error: 'Missing rpcUrl' };
+        logger.warn(`[REDEEM] Missing RPC_URL in environment for on-chain payout check`);
+        return { success: false, value: 0, realizedPnl: 0, error: 'Missing RPC_URL' };
     }
 
     const payoutInfo = await getOutcomePayoutRatio(rpcUrl, position.conditionId, position.outcomeIndex);

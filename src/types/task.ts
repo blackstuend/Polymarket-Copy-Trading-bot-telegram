@@ -12,5 +12,4 @@ export interface CopyTask {
   createdAt: number;
   // Live mode config for on-chain operations (redeem, etc.)
   privateKey?: string;
-  rpcUrl?: string;
 }

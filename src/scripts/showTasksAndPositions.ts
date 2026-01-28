@@ -19,7 +19,6 @@ type TaskRecord = {
   status: 'running' | 'stopped';
   createdAt: number;
   privateKey?: string;
-  rpcUrl?: string;
 };
 
 function formatUsd(value: number): string {

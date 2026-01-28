@@ -16,6 +16,7 @@ import {
 import { UserActivity } from '../models/UserActivity.js';
 import { getClobClient } from '../services/polymarket.js';
 import { logger } from '../utils/logger.js';
+import { config } from '../config/index.js';
 
 let worker: Worker<TaskJobData> | null = null;
 const taskRunCounts = new Map<string, number>();
@@ -59,8 +60,8 @@ async function syncPositions(task: CopyTask): Promise<void> {
     let closedCount = 0;
 
     // Prepare live config if available
-    const liveConfig = task.type === 'live' && task.privateKey && task.rpcUrl
-      ? { privateKey: task.privateKey, rpcUrl: task.rpcUrl }
+    const liveConfig = task.type === 'live' && task.privateKey && config.polymarket.rpcUrl
+      ? { privateKey: task.privateKey, rpcUrl: config.polymarket.rpcUrl }
       : undefined;
 
     for (const myPosition of myPositions) {
