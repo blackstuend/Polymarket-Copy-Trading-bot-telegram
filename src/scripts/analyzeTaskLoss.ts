@@ -2,7 +2,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import { createClient } from 'redis';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
-import { MyPosition } from '../models/MyPosition.js';
+import { MockPosition } from '../models/MockPosition.js';
 import { UserActivity } from '../models/UserActivity.js';
 import { logger } from '../utils/logger.js';
 
@@ -230,7 +230,7 @@ async function main(): Promise<void> {
     logger.info(`  expectedBalance: ${formatUsd(expectedBalance)}`);
     logger.info(`  balanceGap: ${formatSignedUsd(balanceGap)}`);
 
-    const positions = await MyPosition.find({ taskId }).lean();
+    const positions = await MockPosition.find({ taskId }).lean();
     let totalPositionValue = 0;
     let totalCostBasis = 0;
 

@@ -1,11 +1,11 @@
 import { Telegraf, Context } from 'telegraf';
 import { config } from '../config/index.js';
 import { addTask, listTasks, stopTask, removeTask } from '../services/taskService.js';
-import { MyPosition } from '../models/MyPosition.js';
+import { MockPosition } from '../models/MockPosition.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { CopyTask } from '../types/task.js';
 import { getBidPriceLevels } from '../utils/orderBook.js';
-import type { IMyPosition } from '../models/MyPosition.js';
+import type { IMockPosition } from '../models/MockPosition.js';
 import type { IMockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { logger } from '../utils/logger.js';
 
@@ -50,7 +50,7 @@ function formatTradeLine(trade: IMockTradeRecrod, index: number): string {
     `@${fillPrice.toFixed(4)} | size ${fillSize.toFixed(2)}${realized}`;
 }
 
-function formatPositionLine(position: IMyPosition, index: number): string {
+function formatPositionLine(position: IMockPosition, index: number): string {
   const label = position.title || position.slug || position.conditionId || 'unknown';
   const outcome = position.outcome ? ` (${position.outcome})` : '';
   const size = Number.isFinite(position.size) ? position.size : 0;
@@ -71,7 +71,7 @@ function formatPositionLine(position: IMyPosition, index: number): string {
     `${pnlEmoji} uPnL ${formatSignedUsd(cashPnl)} (${formatPct(percentPnl)})`;
 }
 
-function getPositionCostBasis(position: IMyPosition, size: number): number {
+function getPositionCostBasis(position: IMockPosition, size: number): number {
   if (Number.isFinite(position.totalBought) && position.totalBought > 0) {
     return position.totalBought;
   }
@@ -82,7 +82,7 @@ function getPositionCostBasis(position: IMyPosition, size: number): number {
   return avgPrice * size;
 }
 
-async function getOrderBookPriceMap(positions: IMyPosition[]): Promise<Map<string, number>> {
+async function getOrderBookPriceMap(positions: IMockPosition[]): Promise<Map<string, number>> {
   const assets = Array.from(
     new Set(positions.map((pos) => pos.asset).filter((asset) => typeof asset === 'string' && asset))
   );
@@ -111,9 +111,9 @@ async function getOrderBookPriceMap(positions: IMyPosition[]): Promise<Map<strin
 }
 
 function applyOrderBookPrices(
-  positions: IMyPosition[],
+  positions: IMockPosition[],
   priceMap: Map<string, number>
-): IMyPosition[] {
+): IMockPosition[] {
   if (priceMap.size === 0) return positions;
 
   return positions.map((position) => {
@@ -126,8 +126,8 @@ function applyOrderBookPrices(
     const cashPnl = currentValue - costBasis;
     const percentPnl = costBasis > 0 ? (cashPnl / costBasis) * 100 : null;
     const base =
-      typeof (position as IMyPosition & { toObject?: () => IMyPosition }).toObject === 'function'
-        ? (position as IMyPosition & { toObject?: () => IMyPosition }).toObject()
+      typeof (position as IMockPosition & { toObject?: () => IMockPosition }).toObject === 'function'
+        ? (position as IMockPosition & { toObject?: () => IMockPosition }).toObject()
         : position;
 
     return {
@@ -136,11 +136,11 @@ function applyOrderBookPrices(
       currentValue,
       cashPnl,
       percentPnl,
-    } as IMyPosition;
+    } as IMockPosition;
   });
 }
 
-function computePositionStats(positions: IMyPosition[]): {
+function computePositionStats(positions: IMockPosition[]): {
   openPositions: number;
   totalPositionValue: number;
   totalCostBasis: number;
@@ -313,7 +313,7 @@ function setupCommands(bot: Telegraf): void {
 
     for (const task of tasks) {
       const [positions, recentTrades, realizedAgg] = await Promise.all([
-        MyPosition.find({ taskId: task.id, proxyWallet: task.myWalletAddress }).exec(),
+        MockPosition.find({ taskId: task.id }).exec(),
         mockTradeRecrod
           .find({ taskId: task.id })
           .sort({ executedAt: -1 })
@@ -374,7 +374,7 @@ function setupCommands(bot: Telegraf): void {
       if (topPositions.length === 0) {
         lines.push('- none');
       } else {
-        topPositions.forEach((pos: IMyPosition, index: number) => {
+        topPositions.forEach((pos: IMockPosition, index: number) => {
           lines.push(`- ${formatPositionLine(pos, index + 1)}`);
         });
         if (openPositions.length > topPositions.length) {

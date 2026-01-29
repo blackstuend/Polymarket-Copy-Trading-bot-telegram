@@ -5,7 +5,7 @@ import { CopyTask } from '../types/task.js';
 import { scheduleTaskJob, removeTaskJob } from './queue.js';
 import { UserActivity } from '../models/UserActivity.js';
 import { UserPosition } from '../models/UserPosition.js';
-import { MyPosition } from '../models/MyPosition.js';
+import { MockPosition } from '../models/MockPosition.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
@@ -73,7 +73,7 @@ async function removeTaskDatabaseRecords(taskIds: string[]): Promise<void> {
   await Promise.all([
     UserActivity.deleteMany({ taskId: { $in: uniqueTaskIds } }),
     UserPosition.deleteMany({ taskId: { $in: uniqueTaskIds } }),
-    MyPosition.deleteMany({ taskId: { $in: uniqueTaskIds } }),
+    MockPosition.deleteMany({ taskId: { $in: uniqueTaskIds } }),
     mockTradeRecrod.deleteMany({ taskId: { $in: uniqueTaskIds } }),
   ]);
 }

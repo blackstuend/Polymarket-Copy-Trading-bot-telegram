@@ -1,23 +1,15 @@
 import { UserActivity, IUserActivity } from '../models/UserActivity.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
-import { MyPosition } from '../models/MyPosition.js';
+import { MockPosition } from '../models/MockPosition.js';
 import { fetchData } from '../utils/fetchData.js';
 import { CopyTask } from '../types/task.js';
 import { PositionData } from '../types/position.js';
 import { ClobClient, OrderType, Side } from '@polymarket/clob-client';
 import { calculateOrderSize } from '../config/copyStrategy.js';
-import { config } from '../config/index.js';
-import { ethers } from 'ethers';
 import type { Types } from 'mongoose';
 import { logger } from '../utils/logger.js';
-import { getTradingClobClient } from './polymarket.js';
-import { USDC_ADDRESS } from '../utils/addresses.js';
-import {
-    CTF_ABI,
-    CTF_CONTRACT_ADDRESS,
-    getOutcomePayoutRatio,
-    toConditionIdBytes32,
-} from '../utils/redeem.js';
+import { getClobClient, getTradingClobClient } from './polymarket.js';
+import { redeemPosition } from '../utils/redeemPosition.js';
 
 // Polymarket minimum order sizes
 const MIN_ORDER_SIZE_USD = 1.0;
@@ -56,7 +48,7 @@ interface MockOrderResult {
     reason?: string;
 }
 
-const persistMockTradeRecrod = async (
+export const persistMockTradeRecrod = async (
     data: {
         taskId: string;
         side: string;
@@ -93,7 +85,165 @@ const persistMockTradeRecrod = async (
     }
 };
 
-export const syncTradeData = async (task: CopyTask) => {
+// ============================================================================
+// Shared Sell Order Utilities
+// ============================================================================
+
+interface LiveSellResult {
+    totalSoldTokens: number;
+    totalReceivedUsd: number;
+    abortedDueToFunds: boolean;
+    retryCount: number;
+}
+
+/**
+ * Execute live SELL orders in a loop until all tokens are sold or limits reached.
+ * This is the shared logic used by handleLiveSellTrade and forcedClosePosition.
+ */
+const executeLiveSellOrders = async (
+    clobClient: ClobClient,
+    asset: string,
+    sellAmount: number,
+    logPrefix: string
+): Promise<LiveSellResult> => {
+    let remaining = sellAmount;
+    let retry = 0;
+    let abortedDueToFunds = false;
+    let totalSoldTokens = 0;
+    let totalReceivedUsd = 0;
+
+    while (remaining > 0 && retry < LIVE_RETRY_LIMIT) {
+        const orderBook = await clobClient.getOrderBook(asset);
+        if (!orderBook.bids || orderBook.bids.length === 0) {
+            logger.warn(`${logPrefix} No bids available in order book`);
+            break;
+        }
+
+        const maxPriceBid = orderBook.bids.reduce((max, bid) => {
+            return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
+        }, orderBook.bids[0]);
+
+        logger.info(`${logPrefix} Best bid: ${maxPriceBid.size} @ $${maxPriceBid.price}`);
+
+        if (remaining < MIN_ORDER_SIZE_TOKENS) {
+            logger.info(
+                `${logPrefix} Remaining amount (${remaining.toFixed(2)} tokens) below minimum - completing trade`
+            );
+            break;
+        }
+
+        const orderSellAmount = Math.min(remaining, parseFloat(maxPriceBid.size));
+        if (orderSellAmount < MIN_ORDER_SIZE_TOKENS) {
+            logger.info(
+                `${logPrefix} Order amount (${orderSellAmount.toFixed(2)} tokens) below minimum - completing trade`
+            );
+            break;
+        }
+
+        const orderArgs = {
+            side: Side.SELL,
+            tokenID: asset,
+            amount: orderSellAmount,
+            price: parseFloat(maxPriceBid.price),
+        };
+
+        logger.info(
+            `${logPrefix} Creating order: ${orderSellAmount.toFixed(2)} tokens @ $${maxPriceBid.price}`
+        );
+
+        const signedOrder = await clobClient.createMarketOrder(orderArgs);
+        const resp = await clobClient.postOrder(signedOrder, OrderType.FOK);
+        if (resp?.success === true) {
+            retry = 0;
+            totalSoldTokens += orderArgs.amount;
+            totalReceivedUsd += orderArgs.amount * orderArgs.price;
+            logger.info(`${logPrefix} Sold ${orderArgs.amount.toFixed(2)} tokens at $${orderArgs.price}`);
+            remaining -= orderArgs.amount;
+        } else {
+            const errorMessage = extractOrderError(resp);
+            if (isInsufficientBalanceOrAllowanceError(errorMessage)) {
+                abortedDueToFunds = true;
+                logger.warn(
+                    `${logPrefix} Order rejected: ${errorMessage || 'Insufficient balance or allowance'}`
+                );
+                break;
+            }
+            retry += 1;
+            logger.warn(
+                `${logPrefix} Order failed (attempt ${retry}/${LIVE_RETRY_LIMIT})${errorMessage ? ` - ${errorMessage}` : ''}`
+            );
+        }
+    }
+
+    return { totalSoldTokens, totalReceivedUsd, abortedDueToFunds, retryCount: retry };
+};
+
+interface MockSellInput {
+    taskId: string;
+    asset: string;
+    conditionId: string;
+    fillSize: number;
+    fillPrice: number;
+    avgPrice: number;
+    positionSize: number;
+    totalBought?: number;
+    initialValue?: number;
+}
+
+interface MockSellResult {
+    newSize: number;
+    positionSizeAfter: number;
+    soldCost: number;
+    realizedPnl: number;
+}
+
+/**
+ * Update MockPosition after a sell operation.
+ * This is the shared logic used by handleSellTrade and forcedClosePosition (mock mode).
+ */
+const updateMockPositionAfterSell = async (
+    input: MockSellInput,
+    logPrefix: string
+): Promise<MockSellResult> => {
+    const costBasisPrice = input.avgPrice > 0 ? input.avgPrice : input.fillPrice;
+    const soldCost = input.fillSize * costBasisPrice;
+    const realizedPnl = input.fillSize * input.fillPrice - soldCost;
+
+    const newSize = input.positionSize - input.fillSize;
+    const positionSizeAfter = newSize <= 0.01 ? 0 : newSize;
+
+    if (newSize <= 0.01) {
+        await MockPosition.deleteOne({
+            taskId: input.taskId,
+            asset: input.asset,
+            conditionId: input.conditionId,
+        });
+        logger.info(`${logPrefix} Position closed`);
+    } else {
+        const newTotalBought = (input.totalBought || input.initialValue || 0) - soldCost;
+        await MockPosition.updateOne(
+            { taskId: input.taskId, asset: input.asset, conditionId: input.conditionId },
+            {
+                $set: {
+                    size: newSize,
+                    totalBought: newTotalBought,
+                    currentValue: newSize * input.fillPrice,
+                    cashPnl: newSize * input.fillPrice - newTotalBought,
+                    percentPnl: newTotalBought > 0 ? ((newSize * input.fillPrice - newTotalBought) / newTotalBought) * 100 : 0,
+                    curPrice: input.fillPrice,
+                },
+                $inc: {
+                    realizedPnl: realizedPnl,
+                },
+            }
+        );
+        logger.info(`${logPrefix} Position updated, remaining: ${newSize.toFixed(2)} tokens`);
+    }
+
+    return { newSize, positionSizeAfter, soldCost, realizedPnl };
+};
+
+export const fetchNewTradeData = async (task: CopyTask) => {
     const address = task.address;
     const ONE_HOUR_IN_SECONDS = 60 * 60;
     const TOO_OLD_TIMESTAMP = Math.floor(Date.now() / 1000) - ONE_HOUR_IN_SECONDS;
@@ -118,7 +268,6 @@ export const syncTradeData = async (task: CopyTask) => {
             // Check if already in DB
             const exists = await UserActivity.findOne({ transactionHash: activity.transactionHash }).exec();
             if (exists) {
-                seenConditions.add(activity.conditionId);
                 continue;
             }
 
@@ -178,70 +327,6 @@ export const getPendingTrades = async (taskId: string) => {
 
     return pendingTrades;
 }
-/**
- * 取得目前的 positions
- * 如果是 mock 則從資料庫獲取，如果是 live 則從 API 獲取
- * 資料格式與 API 回傳格式一致
- * @param task - 任務資訊
- * @returns Position 資料列表
- */
-export const getMyPositions = async (task: CopyTask): Promise<PositionData[]> => {
-    const address = task.address;
-
-    try {
-        if (task.type === 'mock') {
-            // 從資料庫獲取 positions (mock 模式只用 taskId 查詢)
-            const dbPositions = await MyPosition.find({
-                taskId: task.id,
-                proxyWallet: task.myWalletAddress,
-            }).exec();
-
-            // 轉換資料庫格式為 API 格式
-            const positions: PositionData[] = dbPositions.map((pos) => ({
-                proxyWallet: pos.proxyWallet,
-                asset: pos.asset,
-                conditionId: pos.conditionId,
-                size: pos.size,
-                avgPrice: pos.avgPrice,
-                initialValue: pos.initialValue,
-                currentValue: pos.currentValue,
-                cashPnl: pos.cashPnl,
-                percentPnl: pos.percentPnl,
-                totalBought: pos.totalBought,
-                realizedPnl: pos.realizedPnl,
-                percentRealizedPnl: pos.percentRealizedPnl,
-                curPrice: pos.curPrice,
-                redeemable: pos.redeemable,
-                mergeable: pos.mergeable,
-                title: pos.title,
-                slug: pos.slug,
-                icon: pos.icon,
-                eventSlug: pos.eventSlug,
-                outcome: pos.outcome,
-                outcomeIndex: pos.outcomeIndex,
-                oppositeOutcome: pos.oppositeOutcome,
-                oppositeAsset: pos.oppositeAsset,
-                endDate: pos.endDate,
-                negativeRisk: pos.negativeRisk,
-            }));
-
-            return positions;
-        } else {
-            // 從 API 獲取 positions
-            const positionsUrl = `https://data-api.polymarket.com/positions?user=${address}`;
-            const apiPositions = await fetchData(positionsUrl);
-
-            if (Array.isArray(apiPositions)) {
-                return apiPositions as PositionData[];
-            }
-
-            return [];
-        }
-    } catch (error) {
-        logger.error(`Error getting positions for task ${task.id}: ${error}`);
-        throw error;
-    }
-};
 
 
 /**
@@ -496,10 +581,9 @@ export const handleBuyTrade = async (
     );
 
     // Create or update position in database
-    await MyPosition.findOneAndUpdate(
-        { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet },
+    await MockPosition.findOneAndUpdate(
+        { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId },
         {
-            proxyWallet: taskWallet,
             asset: trade.asset,
             conditionId: trade.conditionId,
             size: result.fillSize,
@@ -624,39 +708,18 @@ export const handleSellTrade = async (
         `($${result.usdcAmount.toFixed(2)}, slippage: ${result.slippage.toFixed(2)}%)`
     );
 
-    // Calculate realized PnL
-    const soldCost = result.fillSize * myPosition.avgPrice;
-    const realizedPnl = result.usdcAmount - soldCost;
-
-    // Update position
-    const newSize = myPosition.size - result.fillSize;
-    const positionSizeAfter = newSize <= 0.01 ? 0 : newSize;
-
-    if (newSize <= 0.01) {
-        // Close position entirely
-        await MyPosition.deleteOne({ taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet });
-        logger.info(`[MOCK] Position closed`);
-    } else {
-        // Partial close
-        const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
-        await MyPosition.updateOne(
-            { taskId: task.id, asset: trade.asset, conditionId: trade.conditionId, proxyWallet: taskWallet },
-            {
-                $set: {
-                    size: newSize,
-                    totalBought: newTotalBought,
-                    currentValue: newSize * result.fillPrice,
-                    cashPnl: newSize * result.fillPrice - newTotalBought,
-                    percentPnl: ((newSize * result.fillPrice - newTotalBought) / newTotalBought) * 100,
-                    curPrice: result.fillPrice,
-                },
-                $inc: {
-                    realizedPnl: realizedPnl,
-                },
-            }
-        );
-        logger.info(`[MOCK] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
-    }
+    // Update position using shared utility
+    const sellResult = await updateMockPositionAfterSell({
+        taskId: task.id,
+        asset: trade.asset,
+        conditionId: trade.conditionId,
+        fillSize: result.fillSize,
+        fillPrice: result.fillPrice,
+        avgPrice: myPosition.avgPrice,
+        positionSize: myPosition.size,
+        totalBought: myPosition.totalBought,
+        initialValue: myPosition.initialValue,
+    }, '[MOCK]');
 
     await persistMockTradeRecrod({
         taskId: task.id,
@@ -670,10 +733,10 @@ export const handleSellTrade = async (
         usdcAmount: result.usdcAmount,
         slippage: result.slippage,
         costBasisPrice: myPosition.avgPrice,
-        soldCost: soldCost,
-        realizedPnl: realizedPnl,
+        soldCost: sellResult.soldCost,
+        realizedPnl: sellResult.realizedPnl,
         positionSizeBefore: myPosition.size,
-        positionSizeAfter: positionSizeAfter,
+        positionSizeAfter: sellResult.positionSizeAfter,
         sourceActivityId: trade._id,
         sourceTransactionHash: trade.transactionHash,
         sourceTimestamp: trade.timestamp,
@@ -689,7 +752,7 @@ export const handleSellTrade = async (
         { bot: true, botExcutedTime: 888 }
     );
 
-    logger.info(`[MOCK] Realized PnL: $${realizedPnl.toFixed(2)}`);
+    logger.info(`[MOCK] Realized PnL: $${sellResult.realizedPnl.toFixed(2)}`);
 
     // Return usdc amount received for balance update
     return result.usdcAmount;
@@ -949,11 +1012,6 @@ export const handleLiveSellTrade = async (
         remaining = myPosition.size;
     }
 
-    let retry = 0;
-    let abortDueToFunds = false;
-    let totalSoldTokens = 0;
-    let totalReceivedUsd = 0;
-
     let clobClient: ClobClient;
     try {
         clobClient = await getTradingClobClient(task);
@@ -962,70 +1020,15 @@ export const handleLiveSellTrade = async (
         return 0;
     }
 
-    while (remaining > 0 && retry < LIVE_RETRY_LIMIT) {
-        const orderBook = await clobClient.getOrderBook(trade.asset);
-        if (!orderBook.bids || orderBook.bids.length === 0) {
-            logger.warn('[LIVE] No bids available in order book');
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            break;
-        }
+    // Execute sell orders using shared utility
+    const sellResult = await executeLiveSellOrders(
+        clobClient,
+        trade.asset,
+        remaining,
+        '[LIVE]'
+    );
 
-        const maxPriceBid = orderBook.bids.reduce((max, bid) => {
-            return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
-        }, orderBook.bids[0]);
-
-        logger.info(`[LIVE] Best bid: ${maxPriceBid.size} @ $${maxPriceBid.price}`);
-
-        if (remaining < MIN_ORDER_SIZE_TOKENS) {
-            logger.info(
-                `[LIVE] Remaining amount (${remaining.toFixed(2)} tokens) below minimum - completing trade`
-            );
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            break;
-        }
-
-        const sellAmount = Math.min(remaining, parseFloat(maxPriceBid.size));
-        if (sellAmount < MIN_ORDER_SIZE_TOKENS) {
-            logger.info(
-                `[LIVE] Order amount (${sellAmount.toFixed(2)} tokens) below minimum - completing trade`
-            );
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            break;
-        }
-
-        const orderArgs = {
-            side: Side.SELL,
-            tokenID: trade.asset,
-            amount: sellAmount,
-            price: parseFloat(maxPriceBid.price),
-        };
-
-        const signedOrder = await clobClient.createMarketOrder(orderArgs);
-        const resp = await clobClient.postOrder(signedOrder, OrderType.FOK);
-        if (resp?.success === true) {
-            retry = 0;
-            totalSoldTokens += orderArgs.amount;
-            totalReceivedUsd += orderArgs.amount * orderArgs.price;
-            logger.info(`[LIVE] Sold ${orderArgs.amount} tokens at $${orderArgs.price}`);
-            remaining -= orderArgs.amount;
-        } else {
-            const errorMessage = extractOrderError(resp);
-            if (isInsufficientBalanceOrAllowanceError(errorMessage)) {
-                abortDueToFunds = true;
-                logger.warn(
-                    `[LIVE] Order rejected: ${errorMessage || 'Insufficient balance or allowance'}`
-                );
-                logger.warn(
-                    '[LIVE] Skipping remaining attempts. Top up funds or run `npm run check-allowance` before retrying.'
-                );
-                break;
-            }
-            retry += 1;
-            logger.warn(
-                `[LIVE] Order failed (attempt ${retry}/${LIVE_RETRY_LIMIT})${errorMessage ? ` - ${errorMessage}` : ''}`
-            );
-        }
-    }
+    const { totalSoldTokens, totalReceivedUsd, abortedDueToFunds, retryCount } = sellResult;
 
     if (totalSoldTokens > 0 && totalBoughtTokens > 0) {
         const sellPercentage = totalSoldTokens / totalBoughtTokens;
@@ -1059,15 +1062,15 @@ export const handleLiveSellTrade = async (
         }
     }
 
-    if (abortDueToFunds) {
+    if (abortedDueToFunds) {
         await UserActivity.updateOne(
             { _id: trade._id },
             { bot: true, botExcutedTime: LIVE_RETRY_LIMIT }
         );
         return totalReceivedUsd;
     }
-    if (retry >= LIVE_RETRY_LIMIT) {
-        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: retry });
+    if (retryCount >= LIVE_RETRY_LIMIT) {
+        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: retryCount });
     } else {
         await UserActivity.updateOne({ _id: trade._id }, { bot: true });
     }
@@ -1093,11 +1096,7 @@ export const handleRedeemTrade = async (
         return 0;
     }
 
-    const liveConfig = task.type === 'live' && task.privateKey && config.polymarket.rpcUrl
-        ? { privateKey: task.privateKey, rpcUrl: config.polymarket.rpcUrl }
-        : undefined;
-
-    const result = await redeemPosition(task, myPosition, liveConfig);
+    const result = await redeemPosition(task, myPosition);
 
     await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
 
@@ -1109,15 +1108,16 @@ export const handleRedeemTrade = async (
 };
 
 export const forcedClosePosition = async (
-    clobClient: ClobClient,
-    task: CopyTask,
     myPosition: PositionData,
-    liveConfig?: { privateKey: string; rpcUrl: string }
+    task: CopyTask
 ): Promise<number> => {
     if (!myPosition || myPosition.size <= 0) {
         return 0;
     }
     const taskWallet = task.myWalletAddress || '';
+
+    // Get CLOB client for orderbook
+    const clobClient = getClobClient();
 
     // Normal case: market is still active, try to sell via order book
     const orderBook = await clobClient.getOrderBook(myPosition.asset);
@@ -1129,8 +1129,8 @@ export const forcedClosePosition = async (
         .filter((bid) => bid.price > 0 && bid.size > 0);
 
     if (validBids.length === 0) {
-        logger.info(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
-        const result = await redeemPosition(task, myPosition, liveConfig);
+        logger.info(`[FORCED_CLOSE] No bids in order book; treating as redeemable`);
+        const result = await redeemPosition(task, myPosition);
         return result.value;
     }
 
@@ -1148,6 +1148,46 @@ export const forcedClosePosition = async (
 
     logger.info(`[FORCED_CLOSE] Closing position for ${myPosition.slug}...`);
 
+    // Handle LIVE trading mode - execute real orders
+    if (task.type === 'live') {
+        let tradingClient: ClobClient;
+        try {
+            tradingClient = await getTradingClobClient(task);
+        } catch (error) {
+            logger.error({ err: error }, `[FORCED_CLOSE] Failed to init trading client`);
+            return 0;
+        }
+
+        // Execute sell orders using shared utility
+        const sellResult = await executeLiveSellOrders(
+            tradingClient,
+            myPosition.asset,
+            myPosition.size,
+            '[FORCED_CLOSE]'
+        );
+
+        const { totalSoldTokens, totalReceivedUsd, abortedDueToFunds } = sellResult;
+
+        if (totalSoldTokens > 0) {
+            const avgFillPrice = totalReceivedUsd / totalSoldTokens;
+            const costBasisPrice = myPosition.avgPrice > 0 ? myPosition.avgPrice : avgFillPrice;
+            const soldCost = totalSoldTokens * costBasisPrice;
+            const realizedPnl = totalReceivedUsd - soldCost;
+
+            logger.info(
+                `[FORCED_CLOSE] LIVE total sold: ${totalSoldTokens.toFixed(2)} tokens for $${totalReceivedUsd.toFixed(2)}`
+            );
+            logger.info(`[FORCED_CLOSE] Realized PnL: $${realizedPnl.toFixed(2)}`);
+        }
+
+        if (abortedDueToFunds) {
+            logger.warn('[FORCED_CLOSE] Aborted due to insufficient funds');
+        }
+
+        return totalReceivedUsd;
+    }
+
+    // Handle MOCK trading mode - simulate order execution
     const result = await simulateOrderExecution(
         clobClient,
         myPosition.asset,
@@ -1159,8 +1199,8 @@ export const forcedClosePosition = async (
 
     if (!result.success) {
         if (result.reason === 'No bids available in order book') {
-            logger.info(`[FORCED_CLOSE] No bids in order book; treating as resolved`);
-            const redeemResult = await redeemPosition(task, myPosition, liveConfig);
+            logger.error(`[FORCED_CLOSE] SELL FAILED; treating as redeemable`);
+            const redeemResult = await redeemPosition(task, myPosition);
             return redeemResult.value;
         }
 
@@ -1168,220 +1208,42 @@ export const forcedClosePosition = async (
         return 0;
     }
 
-    const costBasisPrice = myPosition.avgPrice > 0 ? myPosition.avgPrice : targetPrice;
-    const soldCost = result.fillSize * costBasisPrice;
-    const realizedPnl = result.usdcAmount - soldCost;
+    // Update position using shared utility
+    const sellResult = await updateMockPositionAfterSell({
+        taskId: task.id,
+        asset: myPosition.asset,
+        conditionId: myPosition.conditionId,
+        fillSize: result.fillSize,
+        fillPrice: result.fillPrice,
+        avgPrice: myPosition.avgPrice,
+        positionSize: myPosition.size,
+        totalBought: myPosition.totalBought,
+        initialValue: myPosition.initialValue,
+    }, '[FORCED_CLOSE]');
 
-    const newSize = myPosition.size - result.fillSize;
-    const positionSizeAfter = newSize <= 0.01 ? 0 : newSize;
+    await persistMockTradeRecrod({
+        taskId: task.id,
+        side: 'SELL',
+        proxyWallet: taskWallet,
+        asset: myPosition.asset,
+        conditionId: myPosition.conditionId,
+        outcomeIndex: myPosition.outcomeIndex,
+        fillPrice: result.fillPrice,
+        fillSize: result.fillSize,
+        usdcAmount: result.usdcAmount,
+        slippage: result.slippage,
+        costBasisPrice: myPosition.avgPrice > 0 ? myPosition.avgPrice : result.fillPrice,
+        soldCost: sellResult.soldCost,
+        realizedPnl: sellResult.realizedPnl,
+        positionSizeBefore: myPosition.size,
+        positionSizeAfter: sellResult.positionSizeAfter,
+        title: myPosition.title,
+        slug: myPosition.slug,
+        eventSlug: myPosition.eventSlug,
+        outcome: myPosition.outcome,
+    });
 
-    if (newSize <= 0.01) {
-        await MyPosition.deleteOne({
-            taskId: task.id,
-            asset: myPosition.asset,
-            conditionId: myPosition.conditionId,
-            proxyWallet: taskWallet,
-        });
-        logger.info(`[FORCED_CLOSE] Position closed`);
-    } else {
-        const newTotalBought = (myPosition.totalBought || myPosition.initialValue) - soldCost;
-        await MyPosition.updateOne(
-            { taskId: task.id, asset: myPosition.asset, conditionId: myPosition.conditionId, proxyWallet: taskWallet },
-            {
-                $set: {
-                    size: newSize,
-                    totalBought: newTotalBought,
-                    currentValue: newSize * result.fillPrice,
-                    cashPnl: newSize * result.fillPrice - newTotalBought,
-                    percentPnl: ((newSize * result.fillPrice - newTotalBought) / newTotalBought) * 100,
-                    curPrice: result.fillPrice,
-                },
-                $inc: {
-                    realizedPnl: realizedPnl,
-                },
-            }
-        );
-        logger.info(`[FORCED_CLOSE] Position updated, remaining: ${newSize.toFixed(2)} tokens`);
-    }
-
-    if (task.type === 'mock') {
-        await persistMockTradeRecrod({
-            taskId: task.id,
-            side: 'SELL',
-            proxyWallet: taskWallet,
-            asset: myPosition.asset,
-            conditionId: myPosition.conditionId,
-            outcomeIndex: myPosition.outcomeIndex,
-            fillPrice: result.fillPrice,
-            fillSize: result.fillSize,
-            usdcAmount: result.usdcAmount,
-            slippage: result.slippage,
-            costBasisPrice: costBasisPrice,
-            soldCost: soldCost,
-            realizedPnl: realizedPnl,
-            positionSizeBefore: myPosition.size,
-            positionSizeAfter: positionSizeAfter,
-            title: myPosition.title,
-            slug: myPosition.slug,
-            eventSlug: myPosition.eventSlug,
-            outcome: myPosition.outcome,
-        });
-    }
-
-    logger.info(`[FORCED_CLOSE] Realized PnL: $${realizedPnl.toFixed(2)}`);
+    logger.info(`[FORCED_CLOSE] Realized PnL: $${sellResult.realizedPnl.toFixed(2)}`);
 
     return result.usdcAmount;
 };
-
-/**
- * Redeem a resolved position (supports both mock and live modes)
- * @param task - The copy task
- * @param position - Position to redeem
- * @param liveConfig - Optional live config with privateKey and rpcUrl (required for live mode)
- * @returns Object with success status, redeemed value, and realized PnL
- */
-export const redeemPosition = async (
-    task: CopyTask,
-    position: PositionData,
-    liveConfig?: { privateKey: string; rpcUrl: string }
-): Promise<{ success: boolean; value: number; realizedPnl: number; error?: string }> => {
-    const taskWallet = task.myWalletAddress || '';
-    const positionLabel = position.slug || position.conditionId || 'unknown';
-
-    if (!position || position.size <= 0) {
-        return { success: false, value: 0, realizedPnl: 0, error: 'No position to redeem' };
-    }
-
-    const rpcUrl = config.polymarket.rpcUrl;
-    if (!rpcUrl) {
-        logger.warn(`[REDEEM] Missing RPC_URL in environment for on-chain payout check`);
-        return { success: false, value: 0, realizedPnl: 0, error: 'Missing RPC_URL' };
-    }
-
-    const payoutInfo = await getOutcomePayoutRatio(rpcUrl, position.conditionId, position.outcomeIndex);
-    if (!payoutInfo.settled) {
-        const reason = payoutInfo.error || 'Condition not settled';
-        logger.warn(`[REDEEM] On-chain payout unavailable for ${positionLabel}: ${reason}`);
-        return { success: false, value: 0, realizedPnl: 0, error: reason };
-    }
-
-    const payoutRatio = payoutInfo.payout;
-    const redeemValue = position.size * payoutRatio;
-    const costBasis = position.avgPrice * position.size;
-    const realizedPnl = redeemValue - costBasis;
-
-    if (task.type === 'mock') {
-        await persistMockTradeRecrod({
-            taskId: task.id,
-            side: 'REDEEM',
-            proxyWallet: taskWallet,
-            asset: position.asset,
-            conditionId: position.conditionId,
-            outcomeIndex: position.outcomeIndex,
-            fillPrice: payoutRatio,
-            fillSize: position.size,
-            usdcAmount: redeemValue,
-            slippage: 0,
-            costBasisPrice: position.avgPrice,
-            soldCost: costBasis,
-            realizedPnl: realizedPnl,
-            positionSizeBefore: position.size,
-            positionSizeAfter: 0,
-            title: position.title,
-            slug: position.slug,
-            eventSlug: position.eventSlug,
-            outcome: position.outcome,
-        });
-
-        await MyPosition.deleteOne({
-            taskId: task.id,
-            asset: position.asset,
-            conditionId: position.conditionId,
-            proxyWallet: taskWallet,
-        });
-
-        logger.info(`[REDEEM] Redeemed position (mock), payout: ${payoutRatio.toFixed(4)}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
-        return { success: true, value: redeemValue, realizedPnl };
-    }
-
-    // Live mode: call redeem contract
-    if (!liveConfig) {
-        logger.warn(`[REDEEM] Live mode requires privateKey and rpcUrl for redemption`);
-        return { success: false, value: 0, realizedPnl: 0, error: 'Missing liveConfig for live mode' };
-    }
-
-    try {
-        const provider = new ethers.JsonRpcProvider(liveConfig.rpcUrl);
-        const wallet = new ethers.Wallet(liveConfig.privateKey, provider);
-        const ctfContract = new ethers.Contract(CTF_CONTRACT_ADDRESS, CTF_ABI, wallet);
-
-        const conditionIdBytes32 = toConditionIdBytes32(position.conditionId);
-        const parentCollectionId = ethers.ZeroHash;
-        const indexSets = [1, 2];
-
-        logger.info(`[REDEEM] Attempting redemption for ${position.title || position.slug}...`);
-        logger.info(`[REDEEM] Condition ID: ${conditionIdBytes32}`);
-
-        const feeData = await provider.getFeeData();
-        const gasPrice = feeData.gasPrice || feeData.maxFeePerGas;
-
-        if (!gasPrice) {
-            throw new Error('Could not determine gas price');
-        }
-
-        const adjustedGasPrice = (gasPrice * 120n) / 100n;
-
-        const tx = await ctfContract.redeemPositions(
-            USDC_ADDRESS,
-            parentCollectionId,
-            conditionIdBytes32,
-            indexSets,
-            {
-                gasLimit: 500000,
-                gasPrice: adjustedGasPrice,
-            }
-        );
-
-        logger.info(`[REDEEM] Transaction submitted: ${tx.hash}`);
-
-        const receipt = await tx.wait();
-
-        if (receipt && receipt.status === 1) {
-            await MyPosition.deleteOne({
-                taskId: task.id,
-                asset: position.asset,
-                conditionId: position.conditionId,
-                proxyWallet: taskWallet,
-            });
-
-            logger.info(`[REDEEM] Redemption successful! Gas used: ${receipt.gasUsed.toString()}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
-            return { success: true, value: redeemValue, realizedPnl };
-        } else {
-            logger.error(`[REDEEM] Transaction failed`);
-            return { success: false, value: 0, realizedPnl: 0, error: 'Transaction reverted' };
-        }
-    } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.error(`[REDEEM] Redemption failed: ${errorMessage}`);
-        return { success: false, value: 0, realizedPnl: 0, error: errorMessage };
-    }
-};
-
-/**
- * Get copy trader's positions from API
- */
-export const getCopyTraderPositions = async (address: string): Promise<PositionData[]> => {
-    try {
-        const positionsUrl = `https://data-api.polymarket.com/positions?user=${address}&redeemable=false&limit=500`;
-        const apiPositions = await fetchData(positionsUrl);
-
-        if (Array.isArray(apiPositions)) {
-            return apiPositions as PositionData[];
-        }
-
-        return [];
-    } catch (error) {
-        logger.error(`Error getting copy trader positions: ${error}`);
-        return [];
-    }
-}; 

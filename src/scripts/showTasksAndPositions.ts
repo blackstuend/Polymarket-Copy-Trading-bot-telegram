@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import { createClient } from 'redis';
-import { MyPosition } from '../models/MyPosition.js';
+import { MockPosition } from '../models/MockPosition.js';
 import { logger } from '../utils/logger.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
       logger.info(`Task ${safeTask.id}`);
       logger.info(JSON.stringify(safeTask, null, 2));
 
-      const positions = await MyPosition.find({ taskId: task.id }).lean();
+      const positions = await MockPosition.find({ taskId: task.id }).lean();
       if (positions.length === 0) {
         logger.info('Positions: none');
         continue;

@@ -1,7 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-export interface IMyPosition extends Document {
-  proxyWallet: string;
+export interface IMockPosition extends Document {
   asset: string;
   conditionId: string;
   size: number;
@@ -29,8 +28,7 @@ export interface IMyPosition extends Document {
   taskId: string;
 }
 
-const MyPositionSchema: Schema = new Schema({
-  proxyWallet: { type: String, required: true, index: true },
+const MockPositionSchema: Schema = new Schema({
   asset: { type: String, required: true },
   conditionId: { type: String, required: true },
   size: { type: Number },
@@ -58,6 +56,6 @@ const MyPositionSchema: Schema = new Schema({
   taskId: { type: String, required: true, index: true },
 });
 
-MyPositionSchema.index({ proxyWallet: 1, asset: 1, conditionId: 1, taskId: 1 }, { unique: true });
+MockPositionSchema.index({ taskId: 1, asset: 1, conditionId: 1 }, { unique: true });
 
-export const MyPosition = mongoose.model<IMyPosition>('MyPosition', MyPositionSchema);
+export const MockPosition = mongoose.model<IMockPosition>('MockPosition', MockPositionSchema);

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@ethersproject/wallet':
+        specifier: ^5.8.0
+        version: 5.8.0
       '@polymarket/clob-client':
         specifier: ^5.2.1
         version: 5.2.1(typescript@5.9.3)

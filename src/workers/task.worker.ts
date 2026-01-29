@@ -7,20 +7,19 @@ import { withTaskLock } from '../services/taskLock.js';
 import { CopyTask } from '../types/task.js';
 import {
   forcedClosePosition,
-  getCopyTraderPositions,
-  getMyPositions,
   getPendingTrades,
   handleBuyTrade,
   handleLiveBuyTrade,
   handleLiveSellTrade,
   handleRedeemTrade,
   handleSellTrade,
-  syncTradeData,
+  fetchNewTradeData,
 } from '../services/tradeService.js';
+import { getCopyTraderPositions } from '../utils/getCopyTraderPositions.js';
+import { getMyPositions } from '../utils/getMyPositions.js';
 import { UserActivity } from '../models/UserActivity.js';
 import { getClobClient } from '../services/polymarket.js';
 import { logger } from '../utils/logger.js';
-import { config } from '../config/index.js';
 import getMyBalance from '../utils/getMyBalance.js';
 
 let worker: Worker<TaskJobData> | null = null;
@@ -51,7 +50,6 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
 
 async function syncPositions(task: CopyTask): Promise<void> {
   try {
-    const trackBalance = task.type === 'mock' || (task.initialFinance ?? 0) > 0;
     const myPositions = await getMyPositions(task);
     if (myPositions.length === 0) {
       return;
@@ -62,20 +60,14 @@ async function syncPositions(task: CopyTask): Promise<void> {
       copyTraderPositions.map((position) => [position.conditionId, position])
     );
 
-    const client = getClobClient();
     let closedCount = 0;
-
-    // Prepare live config if available
-    const liveConfig = task.type === 'live' && task.privateKey && config.polymarket.rpcUrl
-      ? { privateKey: task.privateKey, rpcUrl: config.polymarket.rpcUrl }
-      : undefined;
 
     for (const myPosition of myPositions) {
       const copyTraderPosition = copyPositionsByCondition.get(myPosition.conditionId);
       if (!copyTraderPosition || copyTraderPosition.size <= 0) {
-        const received = await forcedClosePosition(client, task, myPosition, liveConfig);
+        const received = await forcedClosePosition(myPosition, task);
         if (received > 0) {
-          if (trackBalance) {
+          if (task.type === 'mock') {
             task.currentBalance += received;
             await updateTask(task);
           }
@@ -137,7 +129,7 @@ async function processJob(job: Job<TaskJobData>): Promise<void> {
 
 
 async function executeTask(task: CopyTask): Promise<void> {
-  await syncTradeData(task);
+  await fetchNewTradeData(task);
 
   try {
     if (task.type === 'live' && (task.initialFinance ?? 0) <= 0) {
@@ -182,17 +174,13 @@ async function executeTask(task: CopyTask): Promise<void> {
 
     logger.info(`[Task ${task.id}] Found ${trades.length} pending trade(s)`);
 
-    // Get my positions (from DB for mock, from API for live)
     let myPositions = await getMyPositions(task);
 
-    // Get copy trader's current positions from API
     const copyTraderPositions = await getCopyTraderPositions(task.address);
 
-    // Get CLOB client for orderbook simulation
     const client = getClobClient();
 
     for (const trade of trades) {
-      // Mark as processing to avoid duplicate processing
       await UserActivity.updateOne({ _id: trade._id }, { botExcutedTime: 1 });
 
       const myPosition = myPositions.find((pos) => pos.conditionId === trade.conditionId);
