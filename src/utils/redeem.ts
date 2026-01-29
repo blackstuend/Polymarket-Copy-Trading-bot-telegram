@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
+import { USDC_ADDRESS } from './addresses.js';
 
 export const CTF_CONTRACT_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
-export const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 
 export const CTF_ABI = [
     'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata indexSets) external',

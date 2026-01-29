@@ -96,8 +96,8 @@ async function main(): Promise<void> {
     id: string;
     type: 'live' | 'mock';
     address: string;
-    initialFinance: number;
-    currentBalance: number;
+    initialFinance?: number;
+    currentBalance?: number;
     fixedAmount: number;
     createdAt: number;
   };
@@ -107,8 +107,8 @@ async function main(): Promise<void> {
   logger.info(`  type: ${task.type}`);
   logger.info(`  address: ${task.address}`);
   logger.info(`  createdAt: ${formatIso(task.createdAt)}`);
-  logger.info(`  initialFinance: ${formatUsd(task.initialFinance)}`);
-  logger.info(`  currentBalance: ${formatUsd(task.currentBalance)}`);
+  logger.info(`  initialFinance: ${formatUsd(task.initialFinance ?? 0)}`);
+  logger.info(`  currentBalance: ${formatUsd(task.currentBalance ?? 0)}`);
   logger.info(`  fixedAmount: ${formatUsd(task.fixedAmount)}`);
 
   const mongoUri = process.env.MONGODB_URI;
@@ -181,8 +181,8 @@ async function main(): Promise<void> {
 
     const netCashFlow =
       -buyTotals.totalUsd + sellTotals.totalUsd + redeemTotals.totalUsd;
-    const expectedBalance = (task.initialFinance || 0) + netCashFlow;
-    const balanceGap = (task.currentBalance || 0) - expectedBalance;
+    const expectedBalance = (task.initialFinance ?? 0) + netCashFlow;
+    const balanceGap = (task.currentBalance ?? 0) - expectedBalance;
 
     const tradeQuery = mockTradeRecrod.find({ taskId }).sort({ executedAt: 1 });
     if (!showAll) {
@@ -204,7 +204,9 @@ async function main(): Promise<void> {
         const usdcAmount = typeof trade.usdcAmount === 'number' ? trade.usdcAmount : 0;
         const delta = side === 'BUY' ? -usdcAmount : side === 'SELL' || side === 'REDEEM' ? usdcAmount : 0;
         cumulative += delta;
-        const pct = task.initialFinance > 0 ? (cumulative / task.initialFinance) * 100 : null;
+        const pct = (task.initialFinance ?? 0) > 0
+          ? (cumulative / (task.initialFinance ?? 0)) * 100
+          : null;
         const label = trade.title || trade.slug || trade.conditionId || 'unknown';
         logger.info(
           `  ${formatIso(trade.executedAt)} | ${side.padEnd(6)} | ${formatUsd(usdcAmount).padEnd(10)} | ` +
@@ -247,9 +249,11 @@ async function main(): Promise<void> {
       totalCostBasis += costBasis;
     }
 
-    const equity = (task.currentBalance || 0) + totalPositionValue;
-    const totalPnl = equity - (task.initialFinance || 0);
-    const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
+    const equity = (task.currentBalance ?? 0) + totalPositionValue;
+    const totalPnl = equity - (task.initialFinance ?? 0);
+    const pnlPct = (task.initialFinance ?? 0) > 0
+      ? (totalPnl / (task.initialFinance ?? 0)) * 100
+      : null;
 
     logger.info('Equity');
     logger.info(`  totalPositionValue: ${formatUsd(totalPositionValue)}`);

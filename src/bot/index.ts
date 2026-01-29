@@ -206,8 +206,8 @@ function setupCommands(bot: Telegraf): void {
     const helpMessage = `
 🤖 *Available Commands*:
 
-/mock <address> <url> <finance> <amount> <duplicate> - Start a mock copy task
-/start <address> <url> <finance> <amount> <duplicate> - Start a live copy task
+/mock <address> <url> <finance> <amount> - Start a mock copy task
+/start <address> <url> <amount> <myWalletAddress> <privateKey> - Start a live copy task
 /list - List all live tasks
 /list\\_mock - List all mock tasks
 /stop <id> - Stop a task
@@ -216,20 +216,21 @@ function setupCommands(bot: Telegraf): void {
 /ping - Check bot status
 
 *Parameters*:
-- finance: Initial balance
+- finance: Initial balance (mock only)
 - amount: Fixed amount per trade
+- myWalletAddress: Your wallet address used for live trading
+- privateKey: Private key for live trading (do not share publicly)
     `;
     await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
   });
 
-  // Helper to parse task arguments
-  const parseTaskArgs = (text: string) => {
+  // Helper to parse mock task arguments
+  const parseMockArgs = (text: string) => {
     const parts = text.split(/\s+/).slice(1);
-    if (parts.length < 5) return null;
+    if (parts.length < 4) return null;
 
     const finance = parseFloat(parts[2]);
     const amount = parseFloat(parts[3]);
-    const duplicate = parts[4].toLowerCase() === 'true';
 
     if (isNaN(finance) || isNaN(amount)) return null;
 
@@ -238,15 +239,31 @@ function setupCommands(bot: Telegraf): void {
       url: parts[1],
       finance,
       amount,
-      duplicate,
+    };
+  };
+
+  // Helper to parse live task arguments
+  const parseLiveArgs = (text: string) => {
+    const parts = text.split(/\s+/).slice(1);
+    if (parts.length < 5) return null;
+
+    const amount = parseFloat(parts[2]);
+    if (isNaN(amount)) return null;
+
+    return {
+      address: parts[0],
+      url: parts[1],
+      amount,
+      myWalletAddress: parts[3],
+      privateKey: parts[4],
     };
   };
 
   // /mock command
   bot.command('mock', async (ctx) => {
-    const args = parseTaskArgs(ctx.message.text);
+    const args = parseMockArgs(ctx.message.text);
     if (!args) {
-      return ctx.reply('❌ Usage: /mock <address> <url> <finance> <amount> <true/false>');
+      return ctx.reply('❌ Usage: /mock <address> <url> <finance> <amount>');
     }
     const task = await addTask({
       type: 'mock',
@@ -255,18 +272,17 @@ function setupCommands(bot: Telegraf): void {
       initialFinance: args.finance,
       currentBalance: args.finance,
       fixedAmount: args.amount,
-      duplicate: args.duplicate,
     });
     await ctx.reply(`✅ Mock task created! ID: ${task.id}\nFixed amount: $${args.amount}`);
   });
 
   // /start command
   bot.command('start', async (ctx) => {
-    const args = parseTaskArgs(ctx.message.text);
+    const args = parseLiveArgs(ctx.message.text);
     if (!args) {
       return ctx.reply(
         '👋 Welcome! I am your Polymarket Copy Trading Bot.\n\n' +
-        'Usage: /start <address> <url> <finance> <amount> <true/false>\n' +
+        'Usage: /start <address> <url> <amount> <myWalletAddress> <privateKey>\n' +
         'Or type /help for more info.'
       );
     }
@@ -274,10 +290,9 @@ function setupCommands(bot: Telegraf): void {
       type: 'live',
       address: args.address,
       url: args.url,
-      initialFinance: args.finance,
-      currentBalance: args.finance,
       fixedAmount: args.amount,
-      duplicate: args.duplicate,
+      myWalletAddress: args.myWalletAddress,
+      privateKey: args.privateKey,
     });
     await ctx.reply(`🚀 Live task started! ID: ${task.id}\nFixed amount: $${args.amount}`);
   });
@@ -298,7 +313,7 @@ function setupCommands(bot: Telegraf): void {
 
     for (const task of tasks) {
       const [positions, recentTrades, realizedAgg] = await Promise.all([
-        MyPosition.find({ taskId: task.id, proxyWallet: task.wallet }).exec(),
+        MyPosition.find({ taskId: task.id, proxyWallet: task.myWalletAddress }).exec(),
         mockTradeRecrod
           .find({ taskId: task.id })
           .sort({ executedAt: -1 })
@@ -314,9 +329,11 @@ function setupCommands(bot: Telegraf): void {
       const priceMap = await getOrderBookPriceMap(positions);
       const pricedPositions = applyOrderBookPrices(positions, priceMap);
       const positionStats = computePositionStats(pricedPositions);
-      const equity = task.currentBalance + positionStats.totalPositionValue;
-      const totalPnl = equity - task.initialFinance;
-      const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
+      const currentBalance = task.currentBalance ?? 0;
+      const initialFinance = task.initialFinance ?? 0;
+      const equity = currentBalance + positionStats.totalPositionValue;
+      const totalPnl = equity - initialFinance;
+      const pnlPct = initialFinance > 0 ? (totalPnl / initialFinance) * 100 : null;
 
       const lastTrade = recentTrades[0];
       const lastTradeLabel = lastTrade
@@ -344,10 +361,10 @@ function setupCommands(bot: Telegraf): void {
       ];
 
       lines.push(
-        `Wallet: \`${escapeMarkdown(task.wallet)}\``,
+        `Wallet: \`${escapeMarkdown(task.myWalletAddress || '')}\``,
         `Status: ${escapeMarkdown(task.status)}`,
-        `Fixed amount: ${formatUsd(task.fixedAmount)} | Duplicate: ${task.duplicate ? 'true' : 'false'}`,
-        `Initial: ${formatUsd(task.initialFinance)} | Balance: ${formatUsd(task.currentBalance)} | Equity: ${formatUsd(equity)}`,
+        `Fixed amount: ${formatUsd(task.fixedAmount)}`,
+        `Initial: ${formatUsd(initialFinance)} | Balance: ${formatUsd(currentBalance)} | Equity: ${formatUsd(equity)}`,
         `PnL: ${formatSignedUsd(totalPnl)} (${formatPct(pnlPct)}) | Realized: ${formatSignedUsd(realizedPnl)} | ` +
           `Unrealized: ${formatSignedUsd(positionStats.unrealizedPnl)}`,
         `Positions: ${positionStats.openPositions} | Exposure: ${formatUsd(positionStats.totalPositionValue)}`,

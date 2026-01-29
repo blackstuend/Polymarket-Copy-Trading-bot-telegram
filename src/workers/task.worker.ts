@@ -1,4 +1,6 @@
 import { Job, Worker } from 'bullmq';
+import { Wallet } from '@ethersproject/wallet';
+import { ethers } from 'ethers';
 import { getTask, listTasks, updateTask } from '../services/taskService.js';
 import { scheduleTaskJob, createWorker, TaskJobData, QUEUE_NAMES } from '../services/queue.js';
 import { withTaskLock } from '../services/taskLock.js';
@@ -9,6 +11,8 @@ import {
   getMyPositions,
   getPendingTrades,
   handleBuyTrade,
+  handleLiveBuyTrade,
+  handleLiveSellTrade,
   handleRedeemTrade,
   handleSellTrade,
   syncTradeData,
@@ -17,6 +21,7 @@ import { UserActivity } from '../models/UserActivity.js';
 import { getClobClient } from '../services/polymarket.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
+import getMyBalance from '../utils/getMyBalance.js';
 
 let worker: Worker<TaskJobData> | null = null;
 const taskRunCounts = new Map<string, number>();
@@ -46,6 +51,7 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
 
 async function syncPositions(task: CopyTask): Promise<void> {
   try {
+    const trackBalance = task.type === 'mock' || (task.initialFinance ?? 0) > 0;
     const myPositions = await getMyPositions(task);
     if (myPositions.length === 0) {
       return;
@@ -69,8 +75,10 @@ async function syncPositions(task: CopyTask): Promise<void> {
       if (!copyTraderPosition || copyTraderPosition.size <= 0) {
         const received = await forcedClosePosition(client, task, myPosition, liveConfig);
         if (received > 0) {
-          task.currentBalance += received;
-          await updateTask(task);
+          if (trackBalance) {
+            task.currentBalance += received;
+            await updateTask(task);
+          }
         }
         closedCount++;
       }
@@ -132,9 +140,43 @@ async function executeTask(task: CopyTask): Promise<void> {
   await syncTradeData(task);
 
   try {
+    if (task.type === 'live' && (task.initialFinance ?? 0) <= 0) {
+      let walletFromKey: string | undefined;
+      if (task.privateKey) {
+        try {
+          walletFromKey = new Wallet(task.privateKey).address;
+        } catch (error) {
+          logger.warn({ err: error }, `[Task ${task.id}] Invalid privateKey for balance fetch`);
+        }
+      }
+
+      const wallet = walletFromKey ?? task.myWalletAddress;
+      if (!wallet || !ethers.isAddress(wallet)) {
+        logger.warn(`[Task ${task.id}] Live task missing wallet address for balance fetch`);
+      } else {
+        try {
+          const balance = await getMyBalance(wallet);
+          task.initialFinance = balance;
+          if ((task.currentBalance ?? 0) <= 0) {
+            task.currentBalance = balance;
+          }
+          await updateTask(task);
+          logger.info(`[Task ${task.id}] Live initial balance set: $${balance.toFixed(2)}`);
+        } catch (error) {
+          logger.warn({ err: error }, `[Task ${task.id}] Failed to fetch live balance`);
+        }
+      }
+    }
+
+    const trackBalance = task.type === 'mock' || (task.initialFinance ?? 0) > 0;
     const trades = await getPendingTrades(task.id);
 
     if (trades.length === 0) {
+      return;
+    }
+
+    if (task.type === 'live' && !task.privateKey) {
+      logger.warn(`[Task ${task.id}] Live task missing privateKey; skipping trade execution`);
       return;
     }
 
@@ -174,11 +216,16 @@ async function executeTask(task: CopyTask): Promise<void> {
           continue;
         }
 
-        const spent = await handleBuyTrade(client, trade, task, myPosition);
+        const spent = task.type === 'live'
+          ? await handleLiveBuyTrade(trade, task, myPosition)
+          : await handleBuyTrade(client, trade, task, myPosition);
         if (spent > 0) {
-          task.currentBalance -= spent;
-          await updateTask(task);
-          logger.info(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+          if (trackBalance) {
+            const newBalance = (task.currentBalance ?? 0) - spent;
+            task.currentBalance = newBalance;
+            await updateTask(task);
+            logger.info(`  - Balance updated: $${newBalance.toFixed(2)}`);
+          }
         }
       } else if (tradeAction === 'SELL') {
         // SELL logic: Skip if no position to sell
@@ -188,18 +235,26 @@ async function executeTask(task: CopyTask): Promise<void> {
           continue;
         }
 
-        const received = await handleSellTrade(client, trade, task, myPosition, copyTraderPosition);
+        const received = task.type === 'live'
+          ? await handleLiveSellTrade(trade, task, myPosition, copyTraderPosition)
+          : await handleSellTrade(client, trade, task, myPosition, copyTraderPosition);
         if (received > 0) {
-          task.currentBalance += received;
-          await updateTask(task);
-          logger.info(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+          if (trackBalance) {
+            const newBalance = (task.currentBalance ?? 0) + received;
+            task.currentBalance = newBalance;
+            await updateTask(task);
+            logger.info(`  - Balance updated: $${newBalance.toFixed(2)}`);
+          }
         }
       } else if (tradeAction === 'REDEEM') {
         const redeemed = await handleRedeemTrade(trade, task, myPosition);
         if (redeemed > 0) {
-          task.currentBalance += redeemed;
-          await updateTask(task);
-          logger.info(`  - Balance updated: $${task.currentBalance.toFixed(2)}`);
+          if (trackBalance) {
+            const newBalance = (task.currentBalance ?? 0) + redeemed;
+            task.currentBalance = newBalance;
+            await updateTask(task);
+            logger.info(`  - Balance updated: $${newBalance.toFixed(2)}`);
+          }
         }
       } else {
         logger.info(`  - Unknown trade action: side=${trade.side || '""'} type=${trade.type || '""'}`);

@@ -25,6 +25,9 @@ const getRedisConfig = () => {
 };
 
 const redisConfig = getRedisConfig();
+const signatureTypeRaw = process.env.POLYMARKET_SIGNATURE_TYPE;
+const signatureTypeParsed = signatureTypeRaw ? parseInt(signatureTypeRaw, 10) : 0;
+const signatureType = Number.isFinite(signatureTypeParsed) ? signatureTypeParsed : 0;
 
 export const config = {
   telegram: {
@@ -38,6 +41,7 @@ export const config = {
     clobHttpUrl: process.env.POLYMARKET_CLOB_HTTP_URL || 'https://clob.polymarket.com',
     rpcUrl: process.env.RPC_URL || '',
     chainId: 137, // Polygon mainnet
+    signatureType,
   },
 } as const;
 
@@ -59,4 +63,3 @@ export function validateConfig(): void {
     logger.warn('⚠️ RPC_URL is not set');
   }
 }
-

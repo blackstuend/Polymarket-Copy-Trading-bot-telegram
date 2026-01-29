@@ -10,12 +10,11 @@ type TaskRecord = {
   id: string;
   type: 'live' | 'mock';
   address: string;
-  wallet?: string;
+  myWalletAddress?: string;
   url: string;
-  initialFinance: number;
-  currentBalance: number;
+  initialFinance?: number;
+  currentBalance?: number;
   fixedAmount: number;
-  duplicate: boolean;
   status: 'running' | 'stopped';
   createdAt: number;
   privateKey?: string;
@@ -149,9 +148,11 @@ async function main(): Promise<void> {
         logger.info(`  - ${line}`);
       }
 
-      const equity = (task.currentBalance || 0) + totalPositionValue;
-      const totalPnl = equity - (task.initialFinance || 0);
-      const pnlPct = task.initialFinance > 0 ? (totalPnl / task.initialFinance) * 100 : null;
+      const currentBalance = task.currentBalance ?? 0;
+      const initialFinance = task.initialFinance ?? 0;
+      const equity = currentBalance + totalPositionValue;
+      const totalPnl = equity - initialFinance;
+      const pnlPct = initialFinance > 0 ? (totalPnl / initialFinance) * 100 : null;
       logger.info(`Equity: ${formatUsd(equity)} | PnL: ${formatUsd(totalPnl)} (${formatPct(pnlPct)})`);
       logger.info(`CreatedAt: ${formatIso(task.createdAt)}`);
     }

@@ -7,8 +7,8 @@ Polymarket 跟單交易機器人，支援 Mock（模擬）和 Live（實盤）�
 | 指令 | 參數 | 說明 |
 |------|------|------|
 | `/help` | - | 顯示指令說明 |
-| `/start` | `<address> <url> <finance> <amount> <true/false>` | 創建實盤跟單任務 |
-| `/mock` | `<address> <url> <finance> <amount> <true/false>` | 創建模擬跟單任務 |
+| `/start` | `<address> <url> <amount> <myWalletAddress> <privateKey>` | 創建實盤跟單任務 |
+| `/mock` | `<address> <url> <finance> <amount>` | 創建模擬跟單任務 |
 | `/list` | - | 顯示所有實盤任務 |
 | `/list_mock` | - | 顯示模擬任務詳細統計 |
 | `/stop` | `<id>` | 停止任務（保留數據） |

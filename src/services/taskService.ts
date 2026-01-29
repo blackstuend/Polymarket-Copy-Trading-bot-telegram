@@ -9,16 +9,43 @@ import { MyPosition } from '../models/MyPosition.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
-type RawTask = Omit<CopyTask, 'status'> & { status: string };
+type RawTask = Partial<Omit<CopyTask, 'status'>> & { status?: string; wallet?: string };
+
+function normalizeNumber(value: unknown, fallback: number): number {
+  const num = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
 
 function normalizeTaskStatus(status: string | undefined): CopyTask['status'] {
   return status === 'stopped' ? 'stopped' : 'running';
 }
 
 function normalizeTask(task: RawTask): CopyTask {
-  return {
-    ...task,
+  const myWalletAddress = task.myWalletAddress || task.wallet || '';
+  const base = {
+    id: task.id || '',
+    address: task.address || '',
+    myWalletAddress,
+    url: task.url || '',
+    initialFinance: normalizeNumber(task.initialFinance, 0),
+    currentBalance: normalizeNumber(task.currentBalance, 0),
+    fixedAmount: normalizeNumber(task.fixedAmount, 0),
+    createdAt: normalizeNumber(task.createdAt, Date.now()),
     status: normalizeTaskStatus(task.status),
+  };
+
+  if (task.type === 'mock') {
+    return {
+      ...base,
+      type: 'mock',
+      privateKey: task.privateKey,
+    };
+  }
+
+  return {
+    ...base,
+    type: 'live',
+    privateKey: task.privateKey || '',
   };
 }
 
@@ -51,17 +78,61 @@ async function removeTaskDatabaseRecords(taskIds: string[]): Promise<void> {
   ]);
 }
 
-export async function addTask(taskData: Omit<CopyTask, 'id' | 'status' | 'createdAt' | 'wallet'> & { wallet?: string }): Promise<CopyTask> {
+export type AddMockTaskInput = {
+  type: 'mock';
+  address: string;
+  url: string;
+  fixedAmount: number;
+  initialFinance: number;
+  currentBalance?: number;
+  myWalletAddress?: string;
+};
+
+export type AddLiveTaskInput = {
+  type: 'live';
+  address: string;
+  url: string;
+  fixedAmount: number;
+  myWalletAddress: string;
+  privateKey: string;
+  initialFinance?: number;
+  currentBalance?: number;
+};
+
+export type AddTaskInput = AddMockTaskInput | AddLiveTaskInput;
+
+export async function addTask(taskData: AddTaskInput): Promise<CopyTask> {
   const redis = await getRedisClient();
   const id = await generateUniqueId();
-  const wallet = taskData.wallet ?? generateMockWalletAddress();
-  const task: CopyTask = {
-    ...taskData,
-    wallet,
-    id,
-    status: 'running',
-    createdAt: Date.now(),
-  };
+  let task: CopyTask;
+
+  if (taskData.type === 'mock') {
+    const myWalletAddress = taskData.myWalletAddress ?? generateMockWalletAddress();
+    const initialFinance = normalizeNumber(taskData.initialFinance, 0);
+    const currentBalance = normalizeNumber(taskData.currentBalance, initialFinance);
+
+    task = {
+      ...taskData,
+      id,
+      myWalletAddress,
+      initialFinance,
+      currentBalance,
+      status: 'running',
+      createdAt: Date.now(),
+    };
+  } else {
+    const initialFinance = normalizeNumber(taskData.initialFinance, 0);
+    const currentBalance = normalizeNumber(taskData.currentBalance, initialFinance);
+
+    task = {
+      ...taskData,
+      id,
+      initialFinance,
+      currentBalance,
+      status: 'running',
+      createdAt: Date.now(),
+    };
+  }
 
   await redis.hSet(TASKS_KEY, task.id, JSON.stringify(task));
   

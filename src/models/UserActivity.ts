@@ -25,6 +25,7 @@ export interface IUserActivity extends Document {
   bot: boolean;
   botExcutedTime: number;
   taskId: string;
+  myBoughtSize?: number;
 }
 
 const UserActivitySchema: Schema = new Schema({
@@ -52,6 +53,7 @@ const UserActivitySchema: Schema = new Schema({
   bot: { type: Boolean, default: false },
   botExcutedTime: { type: Number, default: 0 },
   taskId: { type: String, index: true },
+  myBoughtSize: { type: Number },
 });
 
 export const UserActivity = mongoose.model<IUserActivity>('UserActivity', UserActivitySchema);
