@@ -4,7 +4,6 @@ import { addTask, listTasks, stopTask, removeTask } from '../services/taskServic
 import { MockPosition } from '../models/MockPosition.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { CopyTask } from '../types/task.js';
-import { getBidPriceLevels } from '../utils/orderBook.js';
 import type { IMockPosition } from '../models/MockPosition.js';
 import type { IMockTradeRecrod } from '../models/mockTradeRecrod.js';
 import { logger } from '../utils/logger.js';
@@ -88,14 +87,21 @@ async function getOrderBookPriceMap(positions: IMockPosition[]): Promise<Map<str
   );
   if (assets.length === 0) return new Map();
 
+  const baseUrl = config.polymarket.clobHttpUrl;
   const results = await Promise.all(
     assets.map(async (asset) => {
       try {
-        const levels = await getBidPriceLevels(asset);
-        const bestBid = levels[0]?.price;
-        return [asset, bestBid] as const;
+        const url = `${baseUrl}/price?token_id=${asset}&side=sell`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          logger.error(`[list_mock] Price API returned ${res.status} for ${asset}`);
+          return [asset, undefined] as const;
+        }
+        const data = (await res.json()) as { price?: string };
+        const price = data.price ? parseFloat(data.price) : undefined;
+        return [asset, price] as const;
       } catch (error) {
-        logger.error({ err: error }, `[list_mock] Failed to fetch order book for ${asset}`);
+        logger.error({ err: error }, `[list_mock] Failed to fetch price for ${asset}`);
         return [asset, undefined] as const;
       }
     })
