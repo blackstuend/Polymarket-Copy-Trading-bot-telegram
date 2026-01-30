@@ -2,16 +2,38 @@ import { createClient, RedisClientType } from 'redis';
 import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { addTask, AddTaskInput } from './taskService.js';
+import { addTask, AddTaskInput, stopTask, removeTask, getTask, updateTask } from './taskService.js';
+import { scheduleTaskJob } from './queue.js';
 import getMyBalance from '../utils/getMyBalance.js';
+import { CopyTask } from '../types/task.js';
+
+// ========================================
+// Constants
+// ========================================
 
 const SUBSCRIBE_CHANNEL = 'copy-polymarket:tasks:incoming';
 const NOTIFY_CHANNEL = 'copy-polymarket:notifications';
 
+// ========================================
+// Redis Clients
+// ========================================
+
 let subscriberClient: RedisClientType | null = null;
 let publisherClient: RedisClientType | null = null;
 
-interface IncomingMockTask {
+// ========================================
+// Types
+// ========================================
+
+/** Supported action types for incoming messages */
+type ActionType = 'add' | 'stop' | 'remove' | 'restart';
+
+interface BaseMessage {
+  action: ActionType;
+}
+
+interface AddMockTaskMessage extends BaseMessage {
+  action: 'add';
   type: 'mock';
   address: string;
   profile: string;
@@ -19,7 +41,8 @@ interface IncomingMockTask {
   initialAmount: number;
 }
 
-interface IncomingLiveTask {
+interface AddLiveTaskMessage extends BaseMessage {
+  action: 'add';
   type: 'live';
   address: string;
   profile: string;
@@ -28,29 +51,69 @@ interface IncomingLiveTask {
   myWalletAddress: string;
 }
 
-type IncomingTask = IncomingMockTask | IncomingLiveTask;
+interface StopTaskMessage extends BaseMessage {
+  action: 'stop';
+  taskId: string;
+}
 
-function validateIncomingTask(data: unknown): asserts data is IncomingTask {
+interface RemoveTaskMessage extends BaseMessage {
+  action: 'remove';
+  taskId?: string; // If not provided, removes all tasks
+}
+
+interface RestartTaskMessage extends BaseMessage {
+  action: 'restart';
+  taskId: string;
+}
+
+type IncomingMessage =
+  | AddMockTaskMessage
+  | AddLiveTaskMessage
+  | StopTaskMessage
+  | RemoveTaskMessage
+  | RestartTaskMessage;
+
+// ========================================
+// Validation Functions
+// ========================================
+
+function isValidAction(action: unknown): action is ActionType {
+  return ['add', 'stop', 'remove', 'restart'].includes(action as string);
+}
+
+function validateBaseMessage(data: unknown): asserts data is BaseMessage {
   if (!data || typeof data !== 'object') {
-    throw new Error('Invalid task data: expected an object');
+    throw new Error('Invalid message: expected an object');
   }
+
   const obj = data as Record<string, unknown>;
-  const type = obj.type;
+  // Support legacy format without action (defaults to 'add')
+  if (!obj.action) {
+    obj.action = 'add';
+  }
+
+  if (!isValidAction(obj.action)) {
+    throw new Error(`Invalid action: ${String(obj.action)}`);
+  }
+}
+
+function validateAddTask(data: Record<string, unknown>): void {
+  const type = data.type;
   if (type !== 'mock' && type !== 'live') {
     throw new Error(`Invalid task type: ${String(type)}`);
   }
 
-  if (!obj.address || typeof obj.address !== 'string') {
+  if (!data.address || typeof data.address !== 'string') {
     throw new Error('Missing or invalid address');
   }
 
-  if (!obj.profile || typeof obj.profile !== 'string') {
+  if (!data.profile || typeof data.profile !== 'string') {
     throw new Error('Missing or invalid profile');
   }
 
   if (type === 'mock') {
-    const fixedAmount = obj.fixedAmount as number;
-    const initialAmount = obj.initialAmount as number;
+    const fixedAmount = data.fixedAmount as number;
+    const initialAmount = data.initialAmount as number;
     if (typeof fixedAmount !== 'number' || !Number.isFinite(fixedAmount) || fixedAmount <= 0) {
       throw new Error(`Invalid fixedAmount: ${fixedAmount}`);
     }
@@ -60,9 +123,10 @@ function validateIncomingTask(data: unknown): asserts data is IncomingTask {
   }
 
   if (type === 'live') {
-    const fixAmount = obj.fixAmount as number;
-    const privateKey = obj.privateKey as string;
-    const myWalletAddress = obj.myWalletAddress as string;
+    const fixAmount = data.fixAmount as number;
+    const privateKey = data.privateKey as string;
+    const myWalletAddress = data.myWalletAddress as string;
+
     if (typeof fixAmount !== 'number' || !Number.isFinite(fixAmount) || fixAmount <= 0) {
       throw new Error(`Invalid fixAmount: ${fixAmount}`);
     }
@@ -90,7 +154,40 @@ function validateIncomingTask(data: unknown): asserts data is IncomingTask {
   }
 }
 
-function parseIncomingTask(data: IncomingTask): AddTaskInput {
+function validateTaskIdMessage(data: Record<string, unknown>, requireId: boolean = true): void {
+  if (requireId && (!data.taskId || typeof data.taskId !== 'string')) {
+    throw new Error('Missing or invalid taskId');
+  }
+  if (data.taskId && typeof data.taskId !== 'string') {
+    throw new Error('Invalid taskId: must be a string');
+  }
+}
+
+function validateIncomingMessage(data: unknown): asserts data is IncomingMessage {
+  validateBaseMessage(data);
+
+  const obj = data as unknown as Record<string, unknown>;
+  const action = obj.action as ActionType;
+
+  switch (action) {
+    case 'add':
+      validateAddTask(obj);
+      break;
+    case 'stop':
+    case 'restart':
+      validateTaskIdMessage(obj, true);
+      break;
+    case 'remove':
+      validateTaskIdMessage(obj, false);
+      break;
+  }
+}
+
+// ========================================
+// Message Parsing
+// ========================================
+
+function parseAddTaskMessage(data: AddMockTaskMessage | AddLiveTaskMessage): AddTaskInput {
   if (data.type === 'mock') {
     return {
       type: 'mock',
@@ -112,6 +209,148 @@ function parseIncomingTask(data: IncomingTask): AddTaskInput {
   };
 }
 
+// ========================================
+// Action Handlers
+// ========================================
+
+async function handleAddTask(data: AddMockTaskMessage | AddLiveTaskMessage): Promise<CopyTask> {
+  // For live tasks, ensure wallet has at least 3x fixAmount in USDC
+  if (data.type === 'live') {
+    const balance = await getMyBalance(data.myWalletAddress);
+    const minRequired = data.fixAmount * 3;
+    if (balance < minRequired) {
+      throw new Error(
+        `Insufficient USDC balance: ${balance.toFixed(2)} < ${minRequired.toFixed(2)} (3x fixAmount). ` +
+        `Please deposit at least $${minRequired.toFixed(2)} to proceed.`
+      );
+    }
+    logger.info(
+      `Live task balance check passed: $${balance.toFixed(2)} >= $${minRequired.toFixed(2)} (3x fixAmount)`
+    );
+  }
+
+  const taskInput = parseAddTaskMessage(data);
+  const task = await addTask(taskInput);
+  logger.info({ taskId: task.id, type: task.type }, 'Task created from Redis subscription');
+
+  return task;
+}
+
+async function handleStopTask(data: StopTaskMessage): Promise<{ taskId: string; stopped: boolean }> {
+  const { taskId } = data;
+  const stopped = await stopTask(taskId);
+
+  if (stopped) {
+    logger.info({ taskId }, 'Task stopped from Redis subscription');
+  } else {
+    logger.warn({ taskId }, 'Task not found for stop action');
+  }
+
+  return { taskId, stopped };
+}
+
+async function handleRemoveTask(data: RemoveTaskMessage): Promise<{ taskId?: string; count: number }> {
+  const { taskId } = data;
+  const count = await removeTask(taskId);
+
+  if (taskId) {
+    logger.info({ taskId, count }, 'Task removed from Redis subscription');
+  } else {
+    logger.info({ count }, 'All tasks removed from Redis subscription');
+  }
+
+  return { taskId, count };
+}
+
+async function handleRestartTask(data: RestartTaskMessage): Promise<{ taskId: string; restarted: boolean }> {
+  const { taskId } = data;
+  const task = await getTask(taskId);
+
+  if (!task) {
+    logger.warn({ taskId }, 'Task not found for restart action');
+    return { taskId, restarted: false };
+  }
+
+  if (task.status === 'running') {
+    logger.warn({ taskId }, 'Task is already running');
+    return { taskId, restarted: false };
+  }
+
+  // Update task status to running
+  task.status = 'running';
+  await updateTask(task);
+
+  // Re-schedule the task job
+  await scheduleTaskJob(task.id);
+
+  logger.info({ taskId }, 'Task restarted from Redis subscription');
+  return { taskId, restarted: true };
+}
+
+// ========================================
+// Message Processing
+// ========================================
+
+async function processMessage(message: string): Promise<void> {
+  const data: unknown = JSON.parse(message);
+  logger.info('Received message from Redis channel');
+
+  validateIncomingMessage(data);
+
+  const action = data.action;
+  let notificationPayload: Record<string, unknown>;
+
+  switch (action) {
+    case 'add': {
+      const task = await handleAddTask(data as AddMockTaskMessage | AddLiveTaskMessage);
+      notificationPayload = {
+        event: 'task_created',
+        taskId: task.id,
+        type: task.type,
+        address: task.address,
+        status: task.status,
+      };
+      break;
+    }
+
+    case 'stop': {
+      const result = await handleStopTask(data as StopTaskMessage);
+      notificationPayload = {
+        event: 'task_stopped',
+        taskId: result.taskId,
+        success: result.stopped,
+      };
+      break;
+    }
+
+    case 'remove': {
+      const result = await handleRemoveTask(data as RemoveTaskMessage);
+      notificationPayload = {
+        event: 'task_removed',
+        taskId: result.taskId,
+        count: result.count,
+      };
+      break;
+    }
+
+    case 'restart': {
+      const result = await handleRestartTask(data as RestartTaskMessage);
+      notificationPayload = {
+        event: 'task_restarted',
+        taskId: result.taskId,
+        success: result.restarted,
+      };
+      break;
+    }
+  }
+
+  await publishNotification(notificationPayload);
+}
+
+// ========================================
+// Redis Client Management
+// ========================================
+
 async function getPublisherClient(): Promise<RedisClientType> {
   if (publisherClient && publisherClient.isOpen) {
     return publisherClient;
@@ -132,6 +371,10 @@ async function publishNotification(message: Record<string, unknown>): Promise<vo
   await client.publish(NOTIFY_CHANNEL, JSON.stringify(message));
 }
 
+// ========================================
+// Public API
+// ========================================
+
 export async function startRedisSubscriber(): Promise<void> {
   subscriberClient = createClient({ url: config.redis.url });
 
@@ -143,40 +386,9 @@ export async function startRedisSubscriber(): Promise<void> {
 
   await subscriberClient.subscribe(SUBSCRIBE_CHANNEL, async (message) => {
     try {
-      const data: unknown = JSON.parse(message);
-      logger.info('Received task from Redis channel');
-
-      validateIncomingTask(data);
-
-      // For live tasks, ensure wallet has at least 3x fixAmount in USDC
-      if (data.type === 'live') {
-        const balance = await getMyBalance(data.myWalletAddress);
-        const minRequired = data.fixAmount * 3;
-        if (balance < minRequired) {
-          throw new Error(
-            `Insufficient USDC balance: ${balance.toFixed(2)} < ${minRequired.toFixed(2)} (3x fixAmount). ` +
-            `Please deposit at least $${minRequired.toFixed(2)} to proceed.`
-          );
-        }
-        logger.info(
-          `Live task balance check passed: $${balance.toFixed(2)} >= $${minRequired.toFixed(2)} (3x fixAmount)`
-        );
-      }
-
-      const taskInput = parseIncomingTask(data);
-      const task = await addTask(taskInput);
-
-      logger.info({ taskId: task.id, type: task.type }, 'Task created from Redis subscription');
-
-      await publishNotification({
-        event: 'task_created',
-        taskId: task.id,
-        type: task.type,
-        address: task.address,
-        status: task.status,
-      });
+      await processMessage(message);
     } catch (err) {
-      logger.error({ err, message }, 'Failed to process incoming task from Redis channel');
+      logger.error({ err, message }, 'Failed to process incoming message from Redis channel');
 
       await publishNotification({
         event: 'task_error',
