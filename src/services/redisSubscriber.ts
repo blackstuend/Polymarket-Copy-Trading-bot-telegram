@@ -3,6 +3,7 @@ import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { addTask, AddTaskInput } from './taskService.js';
+import getMyBalance from '../utils/getMyBalance.js';
 
 const SUBSCRIBE_CHANNEL = 'copy-polymarket:tasks:incoming';
 const NOTIFY_CHANNEL = 'copy-polymarket:notifications';
@@ -146,6 +147,21 @@ export async function startRedisSubscriber(): Promise<void> {
       logger.info('Received task from Redis channel');
 
       validateIncomingTask(data);
+
+      // For live tasks, ensure wallet has at least 3x fixAmount in USDC
+      if (data.type === 'live') {
+        const balance = await getMyBalance(data.myWalletAddress);
+        const minRequired = data.fixAmount * 3;
+        if (balance < minRequired) {
+          throw new Error(
+            `Insufficient USDC balance: ${balance.toFixed(2)} < ${minRequired.toFixed(2)} (3x fixAmount). ` +
+            `Please deposit at least $${minRequired.toFixed(2)} to proceed.`
+          );
+        }
+        logger.info(
+          `Live task balance check passed: $${balance.toFixed(2)} >= $${minRequired.toFixed(2)} (3x fixAmount)`
+        );
+      }
 
       const taskInput = parseIncomingTask(data);
       const task = await addTask(taskInput);

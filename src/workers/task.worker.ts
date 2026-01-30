@@ -133,6 +133,7 @@ async function executeTask(task: CopyTask): Promise<void> {
   await fetchNewTradeData(task);
 
   try {
+    // 當 live 初始資金為沒帶時, 則使用此方式
     if (task.type === 'live' && (task.initialFinance ?? 0) <= 0) {
       let walletFromKey: string | undefined;
       if (task.privateKey) {
