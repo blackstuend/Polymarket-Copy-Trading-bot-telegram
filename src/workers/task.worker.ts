@@ -3,7 +3,7 @@ import { Wallet } from '@ethersproject/wallet';
 import { ethers } from 'ethers';
 import { getTask, listTasks, updateTask } from '../services/taskService.js';
 import { scheduleTaskJob, createWorker, TaskJobData, QUEUE_NAMES } from '../services/queue.js';
-import { withTaskLock } from '../services/taskLock.js';
+import { withTaskLock, clearTaskLock } from '../services/taskLock.js';
 import { CopyTask } from '../types/task.js';
 import {
   forcedClosePosition,
@@ -35,6 +35,7 @@ export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
     let restoredCount = 0;
     for (const task of runningTasks) {
       if (task.status === 'running') {
+        await clearTaskLock(task.id);
         await syncPositions(task);
         await scheduleTaskJob(task.id);
         restoredCount++;

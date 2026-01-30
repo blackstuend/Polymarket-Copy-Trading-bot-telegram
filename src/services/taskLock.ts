@@ -29,6 +29,12 @@ export async function releaseTaskLock(taskId: string, token: string): Promise<vo
   await redis.eval(RELEASE_LOCK_SCRIPT, { keys: [lockKey], arguments: [token] });
 }
 
+export async function clearTaskLock(taskId: string): Promise<void> {
+  const redis = await getRedisClient();
+  const lockKey = getLockKey(taskId);
+  await redis.del(lockKey);
+}
+
 export async function withTaskLock(taskId: string, fn: () => Promise<void>): Promise<boolean> {
   const token = await acquireTaskLock(taskId);
   if (!token) {
