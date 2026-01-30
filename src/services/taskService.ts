@@ -7,6 +7,7 @@ import { UserActivity } from '../models/UserActivity.js';
 import { UserPosition } from '../models/UserPosition.js';
 import { MockPosition } from '../models/MockPosition.js';
 import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
+import getMyBalance from '../utils/getMyBalance.js';
 
 const TASKS_KEY = 'copy-polymarket:tasks';
 type RawTask = Partial<Omit<CopyTask, 'status'>> & { status?: string; wallet?: string };
@@ -121,8 +122,9 @@ export async function addTask(taskData: AddTaskInput): Promise<CopyTask> {
       createdAt: Date.now(),
     };
   } else {
-    const initialFinance = normalizeNumber(taskData.initialFinance, 0);
-    const currentBalance = normalizeNumber(taskData.currentBalance, initialFinance);
+    const onChainBalance = await getMyBalance(taskData.myWalletAddress);
+    const initialFinance = normalizeNumber(taskData.initialFinance, onChainBalance);
+    const currentBalance = normalizeNumber(taskData.currentBalance, onChainBalance);
 
     task = {
       ...taskData,

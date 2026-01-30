@@ -1,4 +1,5 @@
 import { createClient, RedisClientType } from 'redis';
+import { ethers } from 'ethers';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { addTask, AddTaskInput } from './taskService.js';
@@ -27,6 +28,66 @@ interface IncomingLiveTask {
 }
 
 type IncomingTask = IncomingMockTask | IncomingLiveTask;
+
+function validateIncomingTask(data: unknown): asserts data is IncomingTask {
+  if (!data || typeof data !== 'object') {
+    throw new Error('Invalid task data: expected an object');
+  }
+  const obj = data as Record<string, unknown>;
+  const type = obj.type;
+  if (type !== 'mock' && type !== 'live') {
+    throw new Error(`Invalid task type: ${String(type)}`);
+  }
+
+  if (!obj.address || typeof obj.address !== 'string') {
+    throw new Error('Missing or invalid address');
+  }
+
+  if (!obj.profile || typeof obj.profile !== 'string') {
+    throw new Error('Missing or invalid profile');
+  }
+
+  if (type === 'mock') {
+    const fixedAmount = obj.fixedAmount as number;
+    const initialAmount = obj.initialAmount as number;
+    if (typeof fixedAmount !== 'number' || !Number.isFinite(fixedAmount) || fixedAmount <= 0) {
+      throw new Error(`Invalid fixedAmount: ${fixedAmount}`);
+    }
+    if (typeof initialAmount !== 'number' || !Number.isFinite(initialAmount) || initialAmount <= 0) {
+      throw new Error(`Invalid initialAmount: ${initialAmount}`);
+    }
+  }
+
+  if (type === 'live') {
+    const fixAmount = obj.fixAmount as number;
+    const privateKey = obj.privateKey as string;
+    const myWalletAddress = obj.myWalletAddress as string;
+    if (typeof fixAmount !== 'number' || !Number.isFinite(fixAmount) || fixAmount <= 0) {
+      throw new Error(`Invalid fixAmount: ${fixAmount}`);
+    }
+    if (!privateKey || typeof privateKey !== 'string') {
+      throw new Error('Missing or invalid privateKey');
+    }
+    if (!myWalletAddress || typeof myWalletAddress !== 'string') {
+      throw new Error('Missing or invalid myWalletAddress');
+    }
+
+    // Verify privateKey derives the expected wallet address
+    let derivedAddress: string;
+    try {
+      const wallet = new ethers.Wallet(privateKey);
+      derivedAddress = wallet.address;
+    } catch {
+      throw new Error('Invalid privateKey: cannot create wallet');
+    }
+
+    if (derivedAddress.toLowerCase() !== myWalletAddress.toLowerCase()) {
+      throw new Error(
+        `privateKey does not match myWalletAddress: expected ${myWalletAddress}, got ${derivedAddress}`
+      );
+    }
+  }
+}
 
 function parseIncomingTask(data: IncomingTask): AddTaskInput {
   if (data.type === 'mock') {
@@ -81,8 +142,10 @@ export async function startRedisSubscriber(): Promise<void> {
 
   await subscriberClient.subscribe(SUBSCRIBE_CHANNEL, async (message) => {
     try {
-      const data = JSON.parse(message) as IncomingTask;
-      logger.info({ type: data.type, address: data.address }, 'Received task from Redis channel');
+      const data: unknown = JSON.parse(message);
+      logger.info('Received task from Redis channel');
+
+      validateIncomingTask(data);
 
       const taskInput = parseIncomingTask(data);
       const task = await addTask(taskInput);
