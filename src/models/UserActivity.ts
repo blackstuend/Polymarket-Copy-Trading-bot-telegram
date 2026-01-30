@@ -35,7 +35,7 @@ const UserActivitySchema: Schema = new Schema({
   type: { type: String },
   size: { type: Number },
   usdcSize: { type: Number },
-  transactionHash: { type: String, required: true, unique: true },
+  transactionHash: { type: String, required: true },
   price: { type: Number },
   asset: { type: String },
   side: { type: String },
@@ -55,5 +55,9 @@ const UserActivitySchema: Schema = new Schema({
   taskId: { type: String, index: true },
   myBoughtSize: { type: Number },
 });
+
+// Compound index to ensure uniqueness per transactionHash + taskId combination
+// This allows the same transaction to be recorded for different tasks
+UserActivitySchema.index({ transactionHash: 1, taskId: 1 }, { unique: true });
 
 export const UserActivity = mongoose.model<IUserActivity>('UserActivity', UserActivitySchema);

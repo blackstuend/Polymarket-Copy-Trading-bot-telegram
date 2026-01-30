@@ -265,8 +265,11 @@ export const fetchNewTradeData = async (task: CopyTask) => {
                 continue;
             }
 
-            // Check if already in DB
-            const exists = await UserActivity.findOne({ transactionHash: activity.transactionHash }).exec();
+            // Check if already in DB for this specific task
+            const exists = await UserActivity.findOne({ 
+                transactionHash: activity.transactionHash,
+                taskId: task.id 
+            }).exec();
             if (exists) {
                 continue;
             }
@@ -673,6 +676,7 @@ export const handleSellTrade = async (
             conditionId: trade.conditionId,
             side: 'SELL',
             bot: { $ne: true },
+            taskId: task.id,
         }).exec();
         const totalUnprocessedSellSize = unprocessedSells.reduce((sum, s) => sum + s.size, 0);
         const reconstructedPosition = copyTraderPosition.size + totalUnprocessedSellSize;
@@ -961,6 +965,7 @@ export const handleLiveSellTrade = async (
         side: 'BUY',
         bot: true,
         myBoughtSize: { $exists: true, $gt: 0 },
+        taskId: task.id,
     }).exec();
 
     const totalBoughtTokens = previousBuys.reduce(
@@ -980,6 +985,7 @@ export const handleLiveSellTrade = async (
         conditionId: trade.conditionId,
         side: 'SELL',
         bot: { $ne: true },
+        taskId: task.id,
     }).exec();
     const totalUnprocessedSellSize = unprocessedSells.reduce((sum, s) => sum + s.size, 0);
 
@@ -1064,6 +1070,7 @@ export const handleLiveSellTrade = async (
                     side: 'BUY',
                     bot: true,
                     myBoughtSize: { $exists: true, $gt: 0 },
+                    taskId: task.id,
                 },
                 { $set: { myBoughtSize: 0 } }
             );
