@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # Telegram Bot Service
+  bot:
+    build: .
+    container_name: polymarket-bot
+    restart: always
+    depends_on:
+      - redis
+      - mongo
+    env_file:
+      - .env
+    environment:
+      # 覆寫連線字串以使用 Docker 內部網路名稱
+      - REDIS_URL=redis://redis:6379
+      - MONGO_URL=mongodb://mongo:27017/polymarket
+      # 確保 Node.js 在生產模式運行
+      - NODE_ENV=production
+    volumes:
+      # 如果需要保留日誌，可以掛載 logs 目錄 (可選)
+      - ./logs:/app/logs
+
+  redis:
+    image: redis:alpine
+    container_name: polymarket-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    command: redis-server --appendonly yes
+
+  mongo:
+    image: mongo:latest
+    container_name: polymarket-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
+volumes:
+  redis_data:
+  mongo_data:
