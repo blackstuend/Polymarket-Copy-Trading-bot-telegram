@@ -271,8 +271,8 @@ export const fetchNewTradeData = async (task: CopyTask) => {
                 continue;
             }
 
-            // Duplicate conditionId → mark as processed
-            const isDuplicate = seenConditions.has(activity.conditionId);
+            // Duplicate conditionId → mark as processed (only for BUY, each SELL should be processed independently)
+            const isDuplicate = activity.side === 'SELL' ? false : seenConditions.has(activity.conditionId);
             seenConditions.add(activity.conditionId);
 
             const newActivity = new UserActivity({
@@ -666,9 +666,20 @@ export const handleSellTrade = async (
     let sellAmount: number;
 
     if (copyTraderPosition && copyTraderPosition.size > 0) {
-        // Calculate the ratio of how much the copy trader sold
-        const copyTraderSellRatio = trade.size / (trade.size + copyTraderPosition.size);
+        // Reconstruct the trader's position before any unprocessed sells
+        // to avoid inflated ratios when multiple sell activities pile up
+        const unprocessedSells = await UserActivity.find({
+            asset: trade.asset,
+            conditionId: trade.conditionId,
+            side: 'SELL',
+            bot: { $ne: true },
+        }).exec();
+        const totalUnprocessedSellSize = unprocessedSells.reduce((sum, s) => sum + s.size, 0);
+        const reconstructedPosition = copyTraderPosition.size + totalUnprocessedSellSize;
+
+        const copyTraderSellRatio = trade.size / reconstructedPosition;
         sellAmount = myPosition.size * copyTraderSellRatio;
+        logger.info(`[MOCK] Reconstructed trader position before sells: ${reconstructedPosition.toFixed(2)} tokens (current: ${copyTraderPosition.size.toFixed(2)} + pending sells: ${totalUnprocessedSellSize.toFixed(2)})`);
         logger.info(`[MOCK] Copy trader sold ${(copyTraderSellRatio * 100).toFixed(2)}% of position`);
         logger.info(`[MOCK] My position: ${myPosition.size.toFixed(2)} tokens, selling: ${sellAmount.toFixed(2)} tokens`);
     } else {
@@ -963,6 +974,15 @@ export const handleLiveSellTrade = async (
         );
     }
 
+    // Reconstruct the trader's position before any unprocessed sells
+    const unprocessedSells = await UserActivity.find({
+        asset: trade.asset,
+        conditionId: trade.conditionId,
+        side: 'SELL',
+        bot: { $ne: true },
+    }).exec();
+    const totalUnprocessedSellSize = unprocessedSells.reduce((sum, s) => sum + s.size, 0);
+
     let remaining = 0;
     if (!copyTraderPosition) {
         remaining = myPosition.size;
@@ -970,11 +990,14 @@ export const handleLiveSellTrade = async (
             `[LIVE] Copy trader closed entire position → Selling all your ${remaining.toFixed(2)} tokens`
         );
     } else {
-        const traderSellPercent = trade.size / (copyTraderPosition.size + trade.size);
-        const traderPositionBefore = copyTraderPosition.size + trade.size;
+        const reconstructedPosition = copyTraderPosition.size + totalUnprocessedSellSize;
+        const traderSellPercent = trade.size / reconstructedPosition;
 
         logger.info(
-            `[LIVE] Position comparison: Trader has ${traderPositionBefore.toFixed(2)} tokens, You have ${myPosition.size.toFixed(2)} tokens`
+            `[LIVE] Reconstructed trader position before sells: ${reconstructedPosition.toFixed(2)} tokens (current: ${copyTraderPosition.size.toFixed(2)} + pending sells: ${totalUnprocessedSellSize.toFixed(2)})`
+        );
+        logger.info(
+            `[LIVE] Position comparison: Trader had ${reconstructedPosition.toFixed(2)} tokens, You have ${myPosition.size.toFixed(2)} tokens`
         );
         logger.info(
             `[LIVE] Trader selling: ${trade.size.toFixed(2)} tokens (${(traderSellPercent * 100).toFixed(2)}% of their position)`

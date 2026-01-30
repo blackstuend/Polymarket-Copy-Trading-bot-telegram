@@ -216,6 +216,8 @@ async function executeTask(task: CopyTask): Promise<void> {
             await updateTask(task);
             logger.info(`  - Balance updated: $${newBalance.toFixed(2)}`);
           }
+          // Refresh positions after trade execution
+          myPositions = await getMyPositions(task);
         }
       } else if (tradeAction === 'SELL') {
         // SELL logic: Skip if no position to sell
@@ -235,6 +237,8 @@ async function executeTask(task: CopyTask): Promise<void> {
             await updateTask(task);
             logger.info(`  - Balance updated: $${newBalance.toFixed(2)}`);
           }
+          // Refresh positions after trade execution
+          myPositions = await getMyPositions(task);
         }
       } else if (tradeAction === 'REDEEM') {
         const redeemed = await handleRedeemTrade(trade, task, myPosition);
