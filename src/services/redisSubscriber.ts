@@ -26,7 +26,7 @@ let publisherClient: RedisClientType | null = null;
 // ========================================
 
 /** Supported action types for incoming messages */
-type ActionType = 'add' | 'stop' | 'remove' | 'restart';
+type ActionType = 'add' | 'stop' | 'remove' | 'restart' | 'edit';
 
 interface BaseMessage {
   action: ActionType;
@@ -66,19 +66,33 @@ interface RestartTaskMessage extends BaseMessage {
   taskId: string;
 }
 
+interface EditTaskMessage extends BaseMessage {
+  action: 'edit';
+  taskId: string;
+  type?: 'mock' | 'live';
+  address?: string;
+  profile?: string;
+  fixedAmount?: number;
+  initialAmount?: number;
+  fixAmount?: number;
+  privateKey?: string;
+  myWalletAddress?: string;
+}
+
 type IncomingMessage =
   | AddMockTaskMessage
   | AddLiveTaskMessage
   | StopTaskMessage
   | RemoveTaskMessage
-  | RestartTaskMessage;
+  | RestartTaskMessage
+  | EditTaskMessage;
 
 // ========================================
 // Validation Functions
 // ========================================
 
 function isValidAction(action: unknown): action is ActionType {
-  return ['add', 'stop', 'remove', 'restart'].includes(action as string);
+  return ['add', 'stop', 'remove', 'restart', 'edit'].includes(action as string);
 }
 
 function validateBaseMessage(data: unknown): asserts data is BaseMessage {
@@ -176,6 +190,10 @@ function validateIncomingMessage(data: unknown): asserts data is IncomingMessage
     case 'stop':
     case 'restart':
       validateTaskIdMessage(obj, true);
+      break;
+    case 'edit':
+      validateTaskIdMessage(obj, true);
+      // Optional: Add specific validation for edit fields if needed
       break;
     case 'remove':
       validateTaskIdMessage(obj, false);
@@ -295,6 +313,49 @@ async function handleRestartTask(data: RestartTaskMessage): Promise<{ taskId: st
   return { taskId, restarted: true };
 }
 
+async function handleEditTask(data: EditTaskMessage): Promise<CopyTask> {
+  const { taskId } = data;
+  const task = await getTask(taskId);
+
+  if (!task) {
+    throw new Error(`Task ${taskId} not found`);
+  }
+
+  if (task.status === 'running') {
+    throw new Error(`Cannot edit task ${taskId} while it is running. Please pause it first.`);
+  }
+
+  // Update fields
+  if (data.type && (data.type === 'mock' || data.type === 'live')) {
+    task.type = data.type;
+  }
+
+  if (data.profile) task.url = data.profile;
+  if (data.address) task.address = data.address;
+
+  if (task.type === 'mock') {
+    if (typeof data.fixedAmount === 'number') task.fixedAmount = data.fixedAmount;
+    if (typeof data.initialAmount === 'number') {
+      task.initialFinance = data.initialAmount;
+      // If balance hasn't diverged significantly, update it too? 
+      // For now, let's reset balance to initial if user edits initial amount? 
+      // Or just update initial property. Let's just update initial property.
+    }
+  } else {
+    // live
+    // Note: data.fixAmount comes from frontend for live, data.fixedAmount for mock. 
+    // The message format mirrors add message.
+    if (typeof data.fixAmount === 'number') task.fixedAmount = data.fixAmount;
+    if (data.privateKey) task.privateKey = data.privateKey;
+    if (data.myWalletAddress) task.myWalletAddress = data.myWalletAddress;
+  }
+
+  await updateTask(task);
+  logger.info({ taskId: task.id }, 'Task updated from Redis subscription');
+
+  return task;
+}
+
 // ========================================
 // Message Processing
 // ========================================
@@ -347,6 +408,16 @@ async function processMessage(message: string): Promise<void> {
         event: 'task_restarted',
         taskId: result.taskId,
         success: result.restarted,
+      };
+      break;
+    }
+
+    case 'edit': {
+      const task = await handleEditTask(data as EditTaskMessage);
+      notificationPayload = {
+        event: 'task_updated',
+        taskId: task.id,
+        data: task
       };
       break;
     }
