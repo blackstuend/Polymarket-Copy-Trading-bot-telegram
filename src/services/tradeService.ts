@@ -157,6 +157,10 @@ const executeLiveSellOrders = async (
         const signedOrder = await clobClient.createMarketOrder(orderArgs);
         const resp = await clobClient.postOrder(signedOrder, OrderType.FOK);
         if (resp?.success === true) {
+            logger.info(`${logPrefix} Order submitted successfully. Status: ${resp.status}, Order ID: ${resp.orderID}`);
+            if (resp.transactionsHashes?.length) {
+                logger.info(`${logPrefix} Transaction Hashes: ${resp.transactionsHashes.join(', ')}`);
+            }
             retry = 0;
             totalSoldTokens += orderArgs.amount;
             totalReceivedUsd += orderArgs.amount * orderArgs.price;
@@ -902,6 +906,10 @@ export const handleLiveBuyTrade = async (
         const signedOrder = await clobClient.createMarketOrder(orderArgs);
         const resp = await clobClient.postOrder(signedOrder, OrderType.FOK);
         if (resp?.success === true) {
+            logger.info(`[LIVE] Order submitted successfully. Status: ${resp.status}, Order ID: ${resp.orderID}`);
+            if (resp.transactionsHashes?.length) {
+                logger.info(`[LIVE] Transaction Hashes: ${resp.transactionsHashes.join(', ')}`);
+            }
             retry = 0;
             const tokensBought = orderArgs.amount / orderArgs.price;
             totalBoughtTokens += tokensBought;
