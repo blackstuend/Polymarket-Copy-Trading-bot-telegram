@@ -6,6 +6,7 @@ const SignatureType = {
   POLY_GNOSIS_SAFE: 1,
   POLY_PROXY: 2
 };
+import { Wallet as V5Wallet } from '@ethersproject/wallet';
 import { ethers, Contract } from 'ethers';
 import { config } from '../config/index.js';
 import { CopyTask } from '../types/task.js';
@@ -146,7 +147,8 @@ export async function getTradingClobClient(
     cached = (async () => {
       const { clobHttpUrl, chainId, rpcUrl } = config.polymarket;
       const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const signer = new ethers.Wallet(task.privateKey, provider);
+      const signerV6 = new ethers.Wallet(task.privateKey, provider);
+      const signerV5 = new V5Wallet(task.privateKey);
 
       // Detect if the proxy wallet is a Gnosis Safe or EOA
       const isProxySafe = await isGnosisSafe(task.myWalletAddress);
@@ -161,7 +163,7 @@ export async function getTradingClobClient(
       const authClient = new ClobClient(
         clobHttpUrl,
         chainId,
-        signer as any,
+        signerV5,
         undefined,
         signatureType,
         funderAddress
@@ -189,12 +191,12 @@ export async function getTradingClobClient(
         `[LIVE] Authenticated CLOB client ready (funder ${funderAddress ? funderAddress.slice(0, 6) + '...' + funderAddress.slice(-4) : 'signer'}, signatureType ${signatureType})`
       );
 
-      const client = new ClobClient(clobHttpUrl, chainId, signer as any, creds, signatureType, funderAddress);
+      const client = new ClobClient(clobHttpUrl, chainId, signerV5, creds, signatureType, funderAddress);
 
       // Perform checks and approvals ONLY for EOA (Signer)
       // If it's a Gnosis Safe, the Safe itself must approve, not the signer key.
       if (!isProxySafe) {
-        await checkAndApproveSales(signer, provider);
+        await checkAndApproveSales(signerV6, provider);
 
         // Update balance allowance cache
         try {
