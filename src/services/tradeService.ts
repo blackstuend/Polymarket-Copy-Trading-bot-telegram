@@ -1301,6 +1301,29 @@ export const forcedClosePosition = async (
                 `[FORCED_CLOSE] LIVE total sold: ${totalSoldTokens.toFixed(2)} tokens for $${totalReceivedUsd.toFixed(2)}`
             );
             logger.info(`[FORCED_CLOSE] Realized PnL: $${realizedPnl.toFixed(2)}`);
+
+            await persistTradeRecord({
+                taskId: task.id,
+                taskType: 'live',
+                side: 'SELL',
+                proxyWallet: task.myWalletAddress,
+                asset: myPosition.asset,
+                conditionId: myPosition.conditionId,
+                outcomeIndex: myPosition.outcomeIndex,
+                fillPrice: avgFillPrice,
+                fillSize: totalSoldTokens,
+                usdcAmount: totalReceivedUsd,
+                slippage: ((targetPrice - avgFillPrice) / targetPrice) * 100,
+                costBasisPrice: costBasisPrice,
+                soldCost: soldCost,
+                realizedPnl: realizedPnl,
+                positionSizeBefore: myPosition.size,
+                positionSizeAfter: myPosition.size - totalSoldTokens,
+                title: myPosition.title,
+                slug: myPosition.slug,
+                eventSlug: myPosition.eventSlug,
+                outcome: myPosition.outcome,
+            });
         }
 
         if (abortedDueToFunds) {
