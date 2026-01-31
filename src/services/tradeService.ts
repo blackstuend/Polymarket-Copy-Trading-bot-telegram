@@ -279,8 +279,21 @@ export const fetchNewTradeData = async (task: CopyTask) => {
             }
 
             // Duplicate conditionId → mark as processed (only for BUY, each SELL should be processed independently)
-            const isDuplicate = activity.side === 'SELL' ? false : seenConditions.has(activity.conditionId);
+            let isDuplicate = activity.side === 'SELL' ? false : seenConditions.has(activity.conditionId);
             seenConditions.add(activity.conditionId);
+
+            // Extra check: prevent duplicate BUYs if they were processed in a previous batch
+            if (activity.side === 'BUY' && !isDuplicate) {
+                const existingBuy = await UserActivity.findOne({
+                    taskId: task.id,
+                    conditionId: activity.conditionId,
+                    side: 'BUY'
+                });
+                if (existingBuy) {
+                    isDuplicate = true;
+                    logger.info(`[DEBOUNCE] Found existing DB record for ${activity.conditionId}, marking as duplicate.`);
+                }
+            }
 
             const newActivity = new UserActivity({
                 proxyWallet: activity.proxyWallet,
@@ -800,21 +813,6 @@ export const handleLiveBuyTrade = async (
     // Skip if already have position (for BUY)
     if (myPosition && myPosition.size > 0) {
         logger.info(`[LIVE] Skip trade ${trade.slug} - already have position`);
-        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
-        return 0;
-    }
-
-    // Check local database for recent successful buys to prevent multi-buy due to API latency
-    const existingBuy = await UserActivity.findOne({
-        taskId: task.id,
-        conditionId: trade.conditionId,
-        side: 'BUY',
-        bot: true,
-        myBoughtSize: { $gt: 0 }
-    });
-
-    if (existingBuy) {
-        logger.info(`[LIVE] Skip trade ${trade.slug} - found recent local purchase (API latency protection)`);
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
         return 0;
     }
