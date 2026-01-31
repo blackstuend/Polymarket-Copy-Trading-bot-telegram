@@ -11,7 +11,7 @@ import {
     getOutcomePayoutRatio,
     toConditionIdBytes32,
 } from './redeem.js';
-import { persistMockTradeRecrod } from '../services/tradeService.js';
+import { persistTradeRecord } from '../services/tradeService.js';
 
 /**
  * Redeem a resolved position (supports both mock and live modes)
@@ -49,8 +49,9 @@ export const redeemPosition = async (
     const realizedPnl = redeemValue - costBasis;
 
     if (task.type === 'mock') {
-        await persistMockTradeRecrod({
+        await persistTradeRecord({
             taskId: task.id,
+            taskType: 'mock',
             side: 'REDEEM',
             proxyWallet: taskWallet,
             asset: position.asset,
@@ -130,7 +131,37 @@ export const redeemPosition = async (
                 conditionId: position.conditionId,
             });
 
-            logger.info(`[REDEEM] Redemption successful! Gas used: ${receipt.gasUsed.toString()}, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
+            // Calculate gas used in POL
+            const gasUsedWei = receipt.gasUsed * (receipt.gasPrice || adjustedGasPrice);
+            const gasUsedPOL = Number(ethers.formatEther(gasUsedWei));
+
+            // Record the live redeem trade
+            await persistTradeRecord({
+                taskId: task.id,
+                taskType: 'live',
+                side: 'REDEEM',
+                proxyWallet: taskWallet,
+                asset: position.asset,
+                conditionId: position.conditionId,
+                outcomeIndex: position.outcomeIndex,
+                fillPrice: payoutRatio,
+                fillSize: position.size,
+                usdcAmount: redeemValue,
+                slippage: 0,
+                costBasisPrice: position.avgPrice,
+                soldCost: costBasis,
+                realizedPnl: realizedPnl,
+                positionSizeBefore: position.size,
+                positionSizeAfter: 0,
+                sourceTransactionHash: tx.hash,
+                title: position.title,
+                slug: position.slug,
+                eventSlug: position.eventSlug,
+                outcome: position.outcome,
+                gasUsed: gasUsedPOL,
+            });
+
+            logger.info(`[REDEEM] Redemption successful! Gas used: ${gasUsedPOL.toFixed(6)} POL, value: $${redeemValue.toFixed(2)}, PnL: $${realizedPnl.toFixed(2)}`);
             return { success: true, value: redeemValue, realizedPnl };
         } else {
             logger.error(`[REDEEM] Transaction failed`);

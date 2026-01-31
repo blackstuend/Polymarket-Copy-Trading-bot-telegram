@@ -2,10 +2,10 @@ import { Telegraf, Context } from 'telegraf';
 import { config } from '../config/index.js';
 import { addTask, listTasks, stopTask, removeTask } from '../services/taskService.js';
 import { MockPosition } from '../models/MockPosition.js';
-import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
+import { TradeRecord } from '../models/TradeRecord.js';
 import { CopyTask } from '../types/task.js';
 import type { IMockPosition } from '../models/MockPosition.js';
-import type { IMockTradeRecrod } from '../models/mockTradeRecrod.js';
+import type { ITradeRecord } from '../models/TradeRecord.js';
 import { logger } from '../utils/logger.js';
 
 let bot: Telegraf | null = null;
@@ -35,7 +35,7 @@ function formatDateTime(timestampMs: number | undefined): string {
   return new Date(timestampMs).toISOString().replace('T', ' ');
 }
 
-function formatTradeLine(trade: IMockTradeRecrod, index: number): string {
+function formatTradeLine(trade: ITradeRecord, index: number): string {
   const label = trade.title || trade.slug || trade.conditionId || 'unknown';
   const outcome = trade.outcome ? ` (${trade.outcome})` : '';
   const realized =
@@ -320,12 +320,12 @@ function setupCommands(bot: Telegraf): void {
     for (const task of tasks) {
       const [positions, recentTrades, realizedAgg] = await Promise.all([
         MockPosition.find({ taskId: task.id }).exec(),
-        mockTradeRecrod
+        TradeRecord
           .find({ taskId: task.id })
           .sort({ executedAt: -1 })
           .limit(5)
           .exec(),
-        mockTradeRecrod.aggregate<{ _id: null; total: number }>([
+        TradeRecord.aggregate<{ _id: null; total: number }>([
           { $match: { taskId: task.id, realizedPnl: { $type: 'number' } } },
           { $group: { _id: null, total: { $sum: '$realizedPnl' } } },
         ]),
@@ -344,7 +344,7 @@ function setupCommands(bot: Telegraf): void {
       const lastTrade = recentTrades[0];
       const lastTradeLabel = lastTrade
         ? `${formatDateTime(lastTrade.executedAt)} ${lastTrade.side} ` +
-          `${lastTrade.title || lastTrade.slug || lastTrade.conditionId || 'unknown'}`
+        `${lastTrade.title || lastTrade.slug || lastTrade.conditionId || 'unknown'}`
         : 'n/a';
 
       const openPositions = pricedPositions.filter((pos) => (pos.size ?? 0) > 0);
@@ -372,7 +372,7 @@ function setupCommands(bot: Telegraf): void {
         `Fixed amount: ${formatUsd(task.fixedAmount)}`,
         `Initial: ${formatUsd(initialFinance)} | Balance: ${formatUsd(currentBalance)} | Equity: ${formatUsd(equity)}`,
         `PnL: ${formatSignedUsd(totalPnl)} (${formatPct(pnlPct)}) | Realized: ${formatSignedUsd(realizedPnl)} | ` +
-          `Unrealized: ${formatSignedUsd(positionStats.unrealizedPnl)}`,
+        `Unrealized: ${formatSignedUsd(positionStats.unrealizedPnl)}`,
         `Positions: ${positionStats.openPositions} | Exposure: ${formatUsd(positionStats.totalPositionValue)}`,
         'Open positions:',
       );
@@ -396,7 +396,7 @@ function setupCommands(bot: Telegraf): void {
       if (recentTrades.length === 0) {
         lines.push('- none');
       } else {
-        recentTrades.forEach((trade: IMockTradeRecrod, index: number) => {
+        recentTrades.forEach((trade: ITradeRecord, index: number) => {
           lines.push(`- ${formatTradeLine(trade, index + 1)}`);
         });
       }
@@ -420,7 +420,7 @@ function setupCommands(bot: Telegraf): void {
   // /remove command
   bot.command('remove', async (ctx) => {
     const id = ctx.message.text.split(/\s+/)[1];
-    
+
     if (id === 'all') {
       await removeTask();
       return ctx.reply('🗑️ All tasks removed.');
@@ -437,7 +437,7 @@ function setupCommands(bot: Telegraf): void {
       // If no ID, remove the most recent one
       const tasks = await listTasks();
       if (tasks.length === 0) return ctx.reply('No tasks to remove.');
-      
+
       const latestTask = tasks.sort((a, b) => b.createdAt - a.createdAt)[0];
       await removeTask(latestTask.id);
       await ctx.reply(`🗑️ Removed latest task: ${latestTask.id} (${latestTask.address})`);

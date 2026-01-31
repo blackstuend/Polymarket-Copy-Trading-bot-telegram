@@ -1,5 +1,5 @@
 import { UserActivity, IUserActivity } from '../models/UserActivity.js';
-import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
+import { TradeRecord } from '../models/TradeRecord.js';
 import { MockPosition } from '../models/MockPosition.js';
 import { fetchData } from '../utils/fetchData.js';
 import { CopyTask } from '../types/task.js';
@@ -49,9 +49,10 @@ interface MockOrderResult {
     reason?: string;
 }
 
-export const persistMockTradeRecrod = async (
+export const persistTradeRecord = async (
     data: {
         taskId: string;
+        taskType: 'live' | 'mock';
         side: string;
         proxyWallet: string;
         asset: string;
@@ -74,15 +75,16 @@ export const persistMockTradeRecrod = async (
         slug?: string;
         eventSlug?: string;
         outcome?: string;
+        gasUsed?: number;
     }
 ): Promise<void> => {
     try {
-        await mockTradeRecrod.create({
+        await TradeRecord.create({
             ...data,
             executedAt: data.executedAt ?? Date.now(),
         });
     } catch (error) {
-        logger.error(`[MOCK] Failed to persist mock trade record: ${error}`);
+        logger.error(`[TradeRecord] Failed to persist trade record: ${error}`);
     }
 };
 
@@ -614,8 +616,9 @@ export const handleBuyTrade = async (
         { upsert: true }
     );
 
-    await persistMockTradeRecrod({
+    await persistTradeRecord({
         taskId: task.id,
+        taskType: 'mock',
         side: trade.side,
         proxyWallet: taskWallet,
         asset: trade.asset,
@@ -738,8 +741,9 @@ export const handleSellTrade = async (
         initialValue: myPosition.initialValue,
     }, '[MOCK]');
 
-    await persistMockTradeRecrod({
+    await persistTradeRecord({
         taskId: task.id,
+        taskType: 'mock',
         side: trade.side,
         proxyWallet: taskWallet,
         asset: trade.asset,
@@ -932,6 +936,29 @@ export const handleLiveBuyTrade = async (
     }
 
     if (totalBoughtTokens > 0) {
+        const avgFillPrice = totalSpentUsd / totalBoughtTokens;
+        await persistTradeRecord({
+            taskId: task.id,
+            taskType: 'live',
+            side: trade.side,
+            proxyWallet: task.myWalletAddress,
+            asset: trade.asset,
+            conditionId: trade.conditionId,
+            outcomeIndex: trade.outcomeIndex,
+            fillPrice: avgFillPrice,
+            fillSize: totalBoughtTokens,
+            usdcAmount: totalSpentUsd,
+            slippage: ((avgFillPrice - trade.price) / trade.price) * 100,
+            positionSizeBefore: myPosition?.size ?? 0,
+            positionSizeAfter: (myPosition?.size ?? 0) + totalBoughtTokens,
+            sourceActivityId: trade._id,
+            sourceTransactionHash: trade.transactionHash,
+            sourceTimestamp: trade.timestamp,
+            title: trade.title,
+            slug: trade.slug,
+            eventSlug: trade.eventSlug,
+            outcome: trade.outcome,
+        });
         logger.info(
             `[LIVE] Tracked purchase: ${totalBoughtTokens.toFixed(2)} tokens for future sell calculations`
         );
@@ -1097,12 +1124,65 @@ export const handleLiveSellTrade = async (
             { _id: trade._id },
             { bot: true, botExcutedTime: LIVE_RETRY_LIMIT }
         );
+        // Still record the partial trade if any tokens were sold
+        if (totalSoldTokens > 0) {
+            const avgFillPrice = totalReceivedUsd / totalSoldTokens;
+            await persistTradeRecord({
+                taskId: task.id,
+                taskType: 'live',
+                side: trade.side,
+                proxyWallet: task.myWalletAddress,
+                asset: trade.asset,
+                conditionId: trade.conditionId,
+                outcomeIndex: trade.outcomeIndex,
+                fillPrice: avgFillPrice,
+                fillSize: totalSoldTokens,
+                usdcAmount: totalReceivedUsd,
+                slippage: ((trade.price - avgFillPrice) / trade.price) * 100,
+                positionSizeBefore: myPosition.size,
+                positionSizeAfter: myPosition.size - totalSoldTokens,
+                sourceActivityId: trade._id,
+                sourceTransactionHash: trade.transactionHash,
+                sourceTimestamp: trade.timestamp,
+                title: trade.title,
+                slug: trade.slug,
+                eventSlug: trade.eventSlug,
+                outcome: trade.outcome,
+            });
+        }
         return totalReceivedUsd;
     }
     if (retryCount >= LIVE_RETRY_LIMIT) {
         await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: retryCount });
     } else {
         await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+    }
+
+    // Record the trade
+    if (totalSoldTokens > 0) {
+        const avgFillPrice = totalReceivedUsd / totalSoldTokens;
+        await persistTradeRecord({
+            taskId: task.id,
+            taskType: 'live',
+            side: trade.side,
+            proxyWallet: task.myWalletAddress,
+            asset: trade.asset,
+            conditionId: trade.conditionId,
+            outcomeIndex: trade.outcomeIndex,
+            fillPrice: avgFillPrice,
+            fillSize: totalSoldTokens,
+            usdcAmount: totalReceivedUsd,
+            slippage: ((trade.price - avgFillPrice) / trade.price) * 100,
+            positionSizeBefore: myPosition.size,
+            positionSizeAfter: myPosition.size - totalSoldTokens,
+            sourceActivityId: trade._id,
+            sourceTransactionHash: trade.transactionHash,
+            sourceTimestamp: trade.timestamp,
+            title: trade.title,
+            slug: trade.slug,
+            eventSlug: trade.eventSlug,
+            outcome: trade.outcome,
+        });
     }
 
     return totalReceivedUsd;
@@ -1251,8 +1331,9 @@ export const forcedClosePosition = async (
         initialValue: myPosition.initialValue,
     }, '[FORCED_CLOSE]');
 
-    await persistMockTradeRecrod({
+    await persistTradeRecord({
         taskId: task.id,
+        taskType: 'mock',
         side: 'SELL',
         proxyWallet: taskWallet,
         asset: myPosition.asset,

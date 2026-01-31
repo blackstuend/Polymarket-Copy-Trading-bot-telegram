@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import { createClient } from 'redis';
-import { mockTradeRecrod } from '../models/mockTradeRecrod.js';
+import { TradeRecord } from '../models/TradeRecord.js';
 import { MockPosition } from '../models/MockPosition.js';
 import { UserActivity } from '../models/UserActivity.js';
 import { logger } from '../utils/logger.js';
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
       logger.info(`  latestTimestamp: ${new Date(latestActivity.timestamp * 1000).toISOString().replace('T', ' ')}`);
     }
 
-    const tradeTotals = await mockTradeRecrod.aggregate<{
+    const tradeTotals = await TradeRecord.aggregate<{
       _id: string | null;
       count: number;
       totalUsd: number;
@@ -184,7 +184,7 @@ async function main(): Promise<void> {
     const expectedBalance = (task.initialFinance ?? 0) + netCashFlow;
     const balanceGap = (task.currentBalance ?? 0) - expectedBalance;
 
-    const tradeQuery = mockTradeRecrod.find({ taskId }).sort({ executedAt: 1 });
+    const tradeQuery = TradeRecord.find({ taskId }).sort({ executedAt: 1 });
     if (!showAll) {
       tradeQuery.limit(limit);
     }
