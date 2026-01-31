@@ -804,6 +804,21 @@ export const handleLiveBuyTrade = async (
         return 0;
     }
 
+    // Check local database for recent successful buys to prevent multi-buy due to API latency
+    const existingBuy = await UserActivity.findOne({
+        taskId: task.id,
+        conditionId: trade.conditionId,
+        side: 'BUY',
+        bot: true,
+        myBoughtSize: { $gt: 0 }
+    });
+
+    if (existingBuy) {
+        logger.info(`[LIVE] Skip trade ${trade.slug} - found recent local purchase (API latency protection)`);
+        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
+        return 0;
+    }
+
     // Live mode: Always fetch on-chain balance before trading
     let currentBalance: number;
     try {
