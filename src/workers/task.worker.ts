@@ -24,13 +24,13 @@ import getMyBalance from '../utils/getMyBalance.js';
 
 let worker: Worker<TaskJobData> | null = null;
 const taskRunCounts = new Map<string, number>();
-const syncEveryRuns = 30;
+const syncEveryRuns = 10;
 
 export async function startTaskWorker(): Promise<Worker<TaskJobData>> {
   if (!worker) {
     // 1. Restore scheduled jobs for all running tasks
     logger.info('🔄 Restoring task schedules...');
-    const runningTasks = await listTasks(); 
+    const runningTasks = await listTasks();
 
     let restoredCount = 0;
     for (const task of runningTasks) {
@@ -133,36 +133,6 @@ async function executeTask(task: CopyTask): Promise<void> {
   await fetchNewTradeData(task);
 
   try {
-    // 當 live 初始資金為沒帶時, 則使用此方式
-    if (task.type === 'live' && (task.initialFinance ?? 0) <= 0) {
-      let walletFromKey: string | undefined;
-      if (task.privateKey) {
-        try {
-          walletFromKey = new Wallet(task.privateKey).address;
-        } catch (error) {
-          logger.warn({ err: error }, `[Task ${task.id}] Invalid privateKey for balance fetch`);
-        }
-      }
-
-      const wallet = walletFromKey ?? task.myWalletAddress;
-      if (!wallet || !ethers.isAddress(wallet)) {
-        logger.warn(`[Task ${task.id}] Live task missing wallet address for balance fetch`);
-      } else {
-        try {
-          const balance = await getMyBalance(wallet);
-          task.initialFinance = balance;
-          if ((task.currentBalance ?? 0) <= 0) {
-            task.currentBalance = balance;
-          }
-          await updateTask(task);
-          logger.info(`[Task ${task.id}] Live initial balance set: $${balance.toFixed(2)}`);
-        } catch (error) {
-          logger.warn({ err: error }, `[Task ${task.id}] Failed to fetch live balance`);
-        }
-      }
-    }
-
-    const trackBalance = task.type === 'mock' || (task.initialFinance ?? 0) > 0;
     const trades = await getPendingTrades(task.id);
 
     if (trades.length === 0) {
@@ -210,7 +180,7 @@ async function executeTask(task: CopyTask): Promise<void> {
           ? await handleLiveBuyTrade(trade, task, myPosition)
           : await handleBuyTrade(client, trade, task, myPosition);
         if (spent > 0) {
-          if (trackBalance) {
+          if (task.type === 'mock') {
             const newBalance = (task.currentBalance ?? 0) - spent;
             task.currentBalance = newBalance;
             await updateTask(task);
@@ -231,7 +201,7 @@ async function executeTask(task: CopyTask): Promise<void> {
           ? await handleLiveSellTrade(trade, task, myPosition, copyTraderPosition)
           : await handleSellTrade(client, trade, task, myPosition, copyTraderPosition);
         if (received > 0) {
-          if (trackBalance) {
+          if (task.type === 'mock') {
             const newBalance = (task.currentBalance ?? 0) + received;
             task.currentBalance = newBalance;
             await updateTask(task);
@@ -243,7 +213,7 @@ async function executeTask(task: CopyTask): Promise<void> {
       } else if (tradeAction === 'REDEEM') {
         const redeemed = await handleRedeemTrade(trade, task, myPosition);
         if (redeemed > 0) {
-          if (trackBalance) {
+          if (task.type === 'mock') {
             const newBalance = (task.currentBalance ?? 0) + redeemed;
             task.currentBalance = newBalance;
             await updateTask(task);

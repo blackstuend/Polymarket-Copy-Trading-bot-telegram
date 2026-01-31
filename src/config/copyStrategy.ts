@@ -28,12 +28,6 @@ export function calculateOrderSize(
         reasoning += ` -> Reduced to fit balance ($${maxAffordable.toFixed(2)})`;
     }
 
-    // Check minimum (if balance too low, skip)
-    if (finalAmount < 1) {
-        reasoning += ` -> Below minimum $1`;
-        finalAmount = 0;
-    }
-
     return {
         fixedAmount,
         finalAmount,

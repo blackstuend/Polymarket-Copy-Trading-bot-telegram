@@ -187,7 +187,10 @@ function validateIncomingMessage(data: unknown): asserts data is IncomingMessage
 // Message Parsing
 // ========================================
 
-function parseAddTaskMessage(data: AddMockTaskMessage | AddLiveTaskMessage): AddTaskInput {
+function parseAddTaskMessage(
+  data: AddMockTaskMessage | AddLiveTaskMessage,
+  initialBalance?: number
+): AddTaskInput {
   if (data.type === 'mock') {
     return {
       type: 'mock',
@@ -206,6 +209,8 @@ function parseAddTaskMessage(data: AddMockTaskMessage | AddLiveTaskMessage): Add
     fixedAmount: data.fixAmount,
     privateKey: data.privateKey,
     myWalletAddress: data.myWalletAddress,
+    initialFinance: initialBalance,
+    currentBalance: initialBalance,
   };
 }
 
@@ -214,6 +219,8 @@ function parseAddTaskMessage(data: AddMockTaskMessage | AddLiveTaskMessage): Add
 // ========================================
 
 async function handleAddTask(data: AddMockTaskMessage | AddLiveTaskMessage): Promise<CopyTask> {
+  let initialBalance: number | undefined;
+
   // For live tasks, ensure wallet has at least 3x fixAmount in USDC
   if (data.type === 'live') {
     const balance = await getMyBalance(data.myWalletAddress);
@@ -227,9 +234,10 @@ async function handleAddTask(data: AddMockTaskMessage | AddLiveTaskMessage): Pro
     logger.info(
       `Live task balance check passed: $${balance.toFixed(2)} >= $${minRequired.toFixed(2)} (3x fixAmount)`
     );
+    initialBalance = balance;
   }
 
-  const taskInput = parseAddTaskMessage(data);
+  const taskInput = parseAddTaskMessage(data, initialBalance);
   const task = await addTask(taskInput);
   logger.info({ taskId: task.id, type: task.type }, 'Task created from Redis subscription');
 

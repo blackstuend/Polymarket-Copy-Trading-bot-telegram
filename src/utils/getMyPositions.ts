@@ -12,7 +12,6 @@ import { logger } from './logger.js';
  * @returns Position 資料列表
  */
 export const getMyPositions = async (task: CopyTask): Promise<PositionData[]> => {
-    const address = task.address;
 
     try {
         if (task.type === 'mock') {
@@ -52,8 +51,14 @@ export const getMyPositions = async (task: CopyTask): Promise<PositionData[]> =>
 
             return positions;
         } else {
-            // 從 API 獲取 positions
-            const positionsUrl = `https://data-api.polymarket.com/positions?user=${address}`;
+            const userAddress = task.myWalletAddress;
+
+            if (!userAddress) {
+                logger.warn(`[getMyPositions] No wallet address found for task ${task.id}`);
+                return [];
+            }
+
+            const positionsUrl = `https://data-api.polymarket.com/positions?user=${userAddress}`;
             const apiPositions = await fetchData(positionsUrl);
 
             if (Array.isArray(apiPositions)) {

@@ -137,25 +137,25 @@ export async function addTask(taskData: AddTaskInput): Promise<CopyTask> {
   }
 
   await redis.hSet(TASKS_KEY, task.id, JSON.stringify(task));
-  
+
   // Schedule the repeating job for this task
   await scheduleTaskJob(task.id);
-  
+
   return task;
 }
 
 export async function listTasks(type?: 'live' | 'mock'): Promise<CopyTask[]> {
   const redis = await getRedisClient();
   const allTasksStr = await redis.hGetAll(TASKS_KEY);
-  
+
   const tasks = Object.values(allTasksStr).map((t) => normalizeTask(JSON.parse(t) as RawTask));
-  
+
   if (type) {
     return tasks.filter(t => t.type === type);
   }
   return tasks;
 }
-  
+
 export async function getTask(id: string): Promise<CopyTask | null> {
   const redis = await getRedisClient();
   const taskStr = await redis.hGet(TASKS_KEY, id);
@@ -171,10 +171,10 @@ export async function stopTask(id: string): Promise<boolean> {
   const task = normalizeTask(JSON.parse(taskStr) as RawTask);
   task.status = 'stopped';
   await redis.hSet(TASKS_KEY, id, JSON.stringify(task));
-  
+
   // Remove the repeating job
   await removeTaskJob(id);
-  
+
   return true;
 }
 
@@ -185,7 +185,7 @@ export async function updateTask(task: CopyTask): Promise<void> {
 
 export async function removeTask(id?: string): Promise<number> {
   const redis = await getRedisClient();
-  
+
   if (id) {
     // Remove specific task job
     await removeTaskJob(id);
@@ -196,11 +196,11 @@ export async function removeTask(id?: string): Promise<number> {
     // We need to list them first to get IDs
     const allTasksStr = await redis.hGetAll(TASKS_KEY);
     const tasks = Object.values(allTasksStr).map(t => JSON.parse(t) as CopyTask);
-    
+
     for (const task of tasks) {
       await removeTaskJob(task.id);
     }
-    
+
     await removeTaskDatabaseRecords(tasks.map((task) => task.id));
 
     const count = await redis.del(TASKS_KEY);

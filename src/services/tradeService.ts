@@ -10,6 +10,7 @@ import type { Types } from 'mongoose';
 import { logger } from '../utils/logger.js';
 import { getClobClient, getTradingClobClient } from './polymarket.js';
 import { redeemPosition } from '../utils/redeemPosition.js';
+import getMyBalance from '../utils/getMyBalance.js';
 
 // Polymarket minimum order sizes
 const MIN_ORDER_SIZE_USD = 1.0;
@@ -246,11 +247,12 @@ const updateMockPositionAfterSell = async (
 export const fetchNewTradeData = async (task: CopyTask) => {
     const address = task.address;
     const ONE_HOUR_IN_SECONDS = 60 * 60;
-    const TOO_OLD_TIMESTAMP = Math.floor(Date.now() / 1000) - ONE_HOUR_IN_SECONDS;
+    const timeWindow = task.type === 'live' ? 60 : ONE_HOUR_IN_SECONDS;
+    const TOO_OLD_TIMESTAMP = Math.floor(Date.now() / 1000) - timeWindow;
 
     try {
         // Fetch trade activities from Polymarket API
-        const apiUrl = `https://data-api.polymarket.com/activity?user=${address}`;
+        const apiUrl = `https://data-api.polymarket.com/activity?user=${address}&start=${TOO_OLD_TIMESTAMP}`;
         const activities = await fetchData(apiUrl);
 
         if (!Array.isArray(activities) || activities.length === 0) {
@@ -266,9 +268,9 @@ export const fetchNewTradeData = async (task: CopyTask) => {
             }
 
             // Check if already in DB for this specific task
-            const exists = await UserActivity.findOne({ 
+            const exists = await UserActivity.findOne({
                 transactionHash: activity.transactionHash,
-                taskId: task.id 
+                taskId: task.id
             }).exec();
             if (exists) {
                 continue;
@@ -798,23 +800,21 @@ export const handleLiveBuyTrade = async (
         return 0;
     }
 
-    const currentBalance = task.currentBalance ?? 0;
-    const skipBalanceCheck = (task.initialFinance ?? 0) <= 0;
-
-    if (!skipBalanceCheck) {
-        logger.info(`[LIVE] Current balance: $${currentBalance.toFixed(2)}`);
+    // Live mode: Always fetch on-chain balance before trading
+    let currentBalance: number;
+    try {
+        currentBalance = await getMyBalance(task.myWalletAddress);
+        logger.info(`[LIVE] On-chain balance: $${currentBalance.toFixed(2)}`);
+    } catch (error) {
+        logger.error({ err: error }, '[LIVE] Failed to fetch on-chain balance');
+        await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: 888 });
+        return 0;
     }
+
     logger.info(`[LIVE] Trader bought: $${trade.usdcSize.toFixed(2)}`);
 
-    // Calculate order size (fixed amount strategy)
-    const orderCalc = skipBalanceCheck
-        ? {
-            fixedAmount: task.fixedAmount,
-            finalAmount: task.fixedAmount,
-            reducedByBalance: false,
-            reasoning: `Fixed amount: $${task.fixedAmount.toFixed(2)} (live mode, balance check skipped)`,
-        }
-        : calculateOrderSize(task.fixedAmount, currentBalance);
+    // Calculate order size (fixed amount strategy) - always check balance in live mode
+    const orderCalc = calculateOrderSize(task.fixedAmount, currentBalance);
 
     logger.info(`[LIVE] ${orderCalc.reasoning}`);
 
@@ -1168,7 +1168,7 @@ export const forcedClosePosition = async (
         (max, bid) => (bid.price > max ? bid.price : max),
         0
     );
-    
+
     const targetPrice = bestBidPrice;
 
     if (targetPrice <= 0) {
