@@ -249,7 +249,7 @@ const updateMockPositionAfterSell = async (
 export const fetchNewTradeData = async (task: CopyTask) => {
     const address = task.address;
     const ONE_HOUR_IN_SECONDS = 60 * 60;
-    const timeWindow = task.type === 'live' ? 60 : ONE_HOUR_IN_SECONDS;
+    const timeWindow = task.type === 'live' ? 600 : ONE_HOUR_IN_SECONDS;
     const TOO_OLD_TIMESTAMP = Math.floor(Date.now() / 1000) - timeWindow;
 
     try {
