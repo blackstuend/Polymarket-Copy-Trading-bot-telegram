@@ -1,4 +1,11 @@
 import { ClobClient } from '@polymarket/clob-client';
+
+// Define SignatureType locally as it's not exported by the client package
+const SignatureType = {
+  EOA: 0,
+  POLY_GNOSIS_SAFE: 1,
+  POLY_PROXY: 2
+};
 import { Wallet } from '@ethersproject/wallet';
 import { ethers } from 'ethers';
 import { config } from '../config/index.js';
@@ -35,19 +42,25 @@ export function getClobClient(): ClobClient {
   return clobClient;
 }
 
-function resolveFunderAddress(taskWallet: string | undefined, signerAddress: string): string {
-  if (taskWallet && ethers.isAddress(taskWallet)) {
-    if (taskWallet.toLowerCase() === signerAddress.toLowerCase()) {
-      return taskWallet;
-    }
-    logger.warn(
-      `[LIVE] Task myWalletAddress ${taskWallet.slice(0, 6)}...${taskWallet.slice(-4)} ` +
-        `does not match signer ${signerAddress.slice(0, 6)}...${signerAddress.slice(-4)}; ` +
-        `using signer address as funder`
-    );
+
+
+/**
+ * Create or return a cached authenticated CLOB client for live trading.
+ */
+/**
+ * Determines if a wallet is a Gnosis Safe by checking if it has contract code
+ */
+const isGnosisSafe = async (address: string): Promise<boolean> => {
+  try {
+    const provider = new ethers.JsonRpcProvider(config.polymarket.rpcUrl);
+    const code = await provider.getCode(address);
+    // If code is not "0x", then it's a contract (likely Gnosis Safe)
+    return code !== '0x';
+  } catch (error) {
+    logger.error(`Error checking wallet type: ${error}`);
+    return false;
   }
-  return signerAddress;
-}
+};
 
 /**
  * Create or return a cached authenticated CLOB client for live trading.
@@ -63,15 +76,48 @@ export async function getTradingClobClient(
   let cached = tradingClients.get(cacheKey);
   if (!cached) {
     cached = (async () => {
-      const { clobHttpUrl, chainId, signatureType } = config.polymarket;
+      const { clobHttpUrl, chainId } = config.polymarket;
       const signer = new Wallet(task.privateKey);
-      const funderAddress = resolveFunderAddress(task.myWalletAddress, signer.address);
 
-      const authClient = new ClobClient(clobHttpUrl, chainId, signer);
-      const creds = await authClient.createOrDeriveApiKey();
+      // Detect if the proxy wallet is a Gnosis Safe or EOA
+      const isProxySafe = await isGnosisSafe(task.myWalletAddress);
+      const signatureType = isProxySafe ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA;
+      const funderAddress = isProxySafe ? task.myWalletAddress : undefined;
 
       logger.info(
-        `[LIVE] Authenticated CLOB client ready (funder ${funderAddress.slice(0, 6)}...${funderAddress.slice(-4)}, signatureType ${signatureType})`
+        `[LIVE] Wallet type detected: ${isProxySafe ? 'Gnosis Safe' : 'EOA (Externally Owned Account)'}`
+      );
+
+      // Initial client for API key creation
+      const authClient = new ClobClient(
+        clobHttpUrl,
+        chainId,
+        signer,
+        undefined,
+        signatureType,
+        funderAddress
+      );
+
+      // Suppress console output during API key creation
+      const originalConsoleLog = console.log;
+      const originalConsoleError = console.error;
+      console.log = function () { };
+      console.error = function () { };
+
+      let creds;
+      try {
+        creds = await authClient.createApiKey();
+        if (!creds.key) {
+          creds = await authClient.deriveApiKey();
+        }
+      } finally {
+        // Restore console functions
+        console.log = originalConsoleLog;
+        console.error = originalConsoleError;
+      }
+
+      logger.info(
+        `[LIVE] Authenticated CLOB client ready (funder ${funderAddress ? funderAddress.slice(0, 6) + '...' + funderAddress.slice(-4) : 'signer'}, signatureType ${signatureType})`
       );
 
       return new ClobClient(clobHttpUrl, chainId, signer, creds, signatureType, funderAddress);

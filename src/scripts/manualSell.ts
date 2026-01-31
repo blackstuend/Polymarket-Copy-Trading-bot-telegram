@@ -128,12 +128,13 @@ const main = async () => {
     // Check args
     if (args.length < 3) {
         console.log(`
-Usage: pnpm tsx src/scripts/manualSell.ts <privateKey> <asset> <amount>
+Usage: pnpm tsx src/scripts/manualSell.ts <privateKey> <asset> <amount> [proxyWallet]
 
 Parameters:
   privateKey: The private key of the wallet to sell from
   asset: The token ID (asset) to sell
   amount: The amount of tokens to sell
+  proxyWallet: (Optional) The Gnosis Safe or proxy address if different from signer
         `);
         process.exit(1);
     }
@@ -141,6 +142,7 @@ Parameters:
     const privateKey = args[0];
     const asset = args[1];
     const amountStr = args[2];
+    const proxyWallet = args[3];
     const amount = parseFloat(amountStr);
 
     if (isNaN(amount) || amount <= 0) {
@@ -150,7 +152,12 @@ Parameters:
 
     try {
         const wallet = new Wallet(privateKey);
-        logger.info(`Initializing sell for wallet: ${wallet.address}`);
+        const targetWalletAddress = proxyWallet || wallet.address;
+
+        logger.info(`Initializing sell for signer: ${wallet.address}`);
+        if (proxyWallet) {
+            logger.info(`Using Proxy Wallet: ${proxyWallet}`);
+        }
         logger.info(`Asset: ${asset}`);
         logger.info(`Amount: ${amount}`);
 
@@ -158,7 +165,7 @@ Parameters:
         const mockTask: any = {
             type: 'live',
             privateKey: privateKey,
-            myWalletAddress: wallet.address
+            myWalletAddress: targetWalletAddress
         };
 
         const client = await getTradingClobClient(mockTask);
