@@ -13,8 +13,8 @@ import { redeemPosition } from '../utils/redeemPosition.js';
 import getMyBalance from '../utils/getMyBalance.js';
 
 // Polymarket minimum order sizes
-const MIN_ORDER_SIZE_USD = 1.0;
-const MIN_ORDER_SIZE_TOKENS = 1.0;
+const MIN_ORDER_SIZE_USD = 0.01;
+const MIN_ORDER_SIZE_TOKENS = 0.01;
 const LIVE_RETRY_LIMIT = 3;
 
 const extractOrderError = (resp: unknown): string | undefined => {
